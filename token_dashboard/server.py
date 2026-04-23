@@ -122,7 +122,7 @@ def build_handler(db_path: str, projects_dir: str):
                 return _send_json(self, daily_token_breakdown(db_path, since, until))
             if path == "/api/skills":
                 rows = skill_breakdown(db_path, since, until)
-                catalog = cached_catalog()
+                catalog = cached_catalog(db_path)
                 for r in rows:
                     info = catalog.get(r["skill"])
                     r["tokens_per_call"] = info["tokens"] if info else None

@@ -2,11 +2,9 @@
 
 None of these are blockers — the dashboard still gives you useful information. They're the rough edges you'll notice if you look hard.
 
-## Skills token counts are partial
+## Skills token counts are partial for subagent-dispatched skills
 
-The Skills route shows every skill Claude Code invoked, how many times, across how many sessions, and when. The **tokens-per-call** column is populated only for skills whose `SKILL.md` lives under `~/.claude/skills/`, `~/.claude/scheduled-tasks/`, or `~/.claude/plugins/`. Skills registered elsewhere (project-local `.claude/skills/`, or invocations that go through the `Task` tool with a skill-shaped `subagent_type`) show invocation counts but leave the token column blank.
-
-It's still a useful view — you can see which skills dominate your session time — just don't expect a complete per-skill token cost. PRs to broaden the catalog scan welcome.
+The Skills route shows every skill Claude Code invoked, how many times, across how many sessions, and when. The **tokens-per-call** column is populated for every skill whose `SKILL.md` lives under `~/.claude/skills/`, `~/.claude/scheduled-tasks/`, `~/.claude/plugins/`, or a project-local `.claude/skills/` directory discovered from the cwds in your session history. The one case that still leaves the token column blank is skills invoked through the `Task` tool with a skill-shaped `subagent_type` — those arrive without a resolvable slug on disk.
 
 ## Cost for Pro / Max / Max-20x users is shown as API-equivalent, not subscription value
 

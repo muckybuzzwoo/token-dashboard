@@ -41,7 +41,6 @@ Component layout: `cli.py` (entry points) → `token_dashboard/scanner.py` (JSON
 
 ## Ideas that would genuinely help
 
-- Broadening the Skills catalog scan to cover project-local `.claude/skills/` directories (closes the known limitation).
 - A CSV or JSON export of any route.
 - A session-filter UI (currently everything is all-time or implicit-"recent").
 - A GitHub Actions workflow that runs the tests on push.

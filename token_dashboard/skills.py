@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 _DEFAULT_ROOTS = [
     Path.home() / ".claude" / "skills",
@@ -91,16 +91,50 @@ def scan_catalog(roots=None) -> Dict[str, dict]:
     return catalog
 
 
-_cache: dict = {"at": 0.0, "data": {}}
+def _project_skill_roots_from_cwds(cwds: Iterable[str]) -> list[Path]:
+    """Return the innermost `.claude/skills/` directory for each cwd.
+
+    Matches Claude Code's resolution rule: walk up from cwd and use the first
+    `.claude/skills/` found, so a nested repo uses its own skills, not a parent's.
+    """
+    roots: set[Path] = set()
+    for cwd in cwds:
+        if not cwd:
+            continue
+        p = Path(cwd)
+        for ancestor in (p, *p.parents):
+            candidate = ancestor / ".claude" / "skills"
+            if candidate.is_dir():
+                roots.add(candidate)
+                break
+    return sorted(roots)
+
+
+def _cwds_from_db(db_path) -> list[str]:
+    from .db import connect
+    with connect(db_path) as c:
+        return [r[0] for r in c.execute(
+            "SELECT DISTINCT cwd FROM messages WHERE cwd IS NOT NULL"
+        )]
+
+
+_cache: dict = {"at": 0.0, "data": {}, "key": None}
 _TTL_SECONDS = 60.0
 
 
-def cached_catalog() -> Dict[str, dict]:
-    """scan_catalog() with a simple in-process TTL cache."""
+def cached_catalog(db_path=None) -> Dict[str, dict]:
+    """scan_catalog() with a simple in-process TTL cache.
+
+    When `db_path` is provided, extra roots are derived from the distinct cwds
+    in `messages` so project-local `.claude/skills/` directories are included.
+    """
     now = time.time()
-    if now - _cache["at"] > _TTL_SECONDS:
-        _cache["data"] = scan_catalog()
+    key = str(db_path) if db_path else None
+    if now - _cache["at"] > _TTL_SECONDS or _cache["key"] != key:
+        extra = _project_skill_roots_from_cwds(_cwds_from_db(db_path)) if db_path else []
+        _cache["data"] = scan_catalog(_DEFAULT_ROOTS + extra)
         _cache["at"] = now
+        _cache["key"] = key
     return _cache["data"]
 
 
