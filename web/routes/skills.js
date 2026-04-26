@@ -59,12 +59,15 @@ export default async function (root) {
 
     <div class="card" style="margin-top:16px">
       <h3>All skills</h3>
-      <p class="muted" style="margin:-4px 0 14px;font-size:12px">"Tokens per call" is the size of the skill's <code>SKILL.md</code> file — what Claude Code loads into context each time the skill is invoked.</p>
+      <p class="muted" style="margin:-4px 0 14px;font-size:12px">"Tokens per call" is the size of the skill's <code>SKILL.md</code> file — what Claude Code loads into context each time. "Budget" / "p50 out" / "p95 out" track the skill's <strong>output</strong> footprint: budget is parsed from the <code>SKILL.md</code> body; p50/p95 are the historical distribution per invocation. Red means p50 exceeds budget by more than 20%.</p>
       <table>
         <thead><tr>
           <th>skill</th>
           <th class="num">invocations</th>
           <th class="num">tokens per call</th>
+          <th class="num">budget</th>
+          <th class="num">p50 out</th>
+          <th class="num">p95 out</th>
           <th class="num">sessions</th>
           <th>last used</th>
         </tr></thead>
@@ -74,9 +77,12 @@ export default async function (root) {
               <td><span class="badge">${fmt.htmlSafe(s.skill)}</span></td>
               <td class="num">${fmt.int(s.invocations)}</td>
               <td class="num">${s.tokens_per_call == null ? '<span class="muted">—</span>' : fmt.int(s.tokens_per_call)}</td>
+              <td class="num">${s.budget_output_tokens == null ? '<span class="muted">—</span>' : fmt.int(s.budget_output_tokens)}</td>
+              <td class="num">${s.p50_output_tokens == null ? '<span class="muted">—</span>' : (s.over_budget ? `<span class="badge" style="background:#7a2e2e;color:#fff">${fmt.int(s.p50_output_tokens)}</span>` : fmt.int(s.p50_output_tokens))}</td>
+              <td class="num">${s.p95_output_tokens == null ? '<span class="muted">—</span>' : fmt.int(s.p95_output_tokens)}</td>
               <td class="num">${fmt.int(s.sessions)}</td>
               <td class="mono">${fmt.ts(s.last_used)}</td>
-            </tr>`).join('') || '<tr><td colspan="5" class="muted">no skills invoked in this range</td></tr>'}
+            </tr>`).join('') || '<tr><td colspan="8" class="muted">no skills invoked in this range</td></tr>'}
         </tbody>
       </table>
     </div>
