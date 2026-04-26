@@ -27,10 +27,12 @@ No `pip install`. No Node.js. No build step.
 ## Quickstart
 
 ```bash
-git clone https://github.com/<your-handle>/token-dashboard.git
+git clone https://github.com/nateherkai/token-dashboard.git
 cd token-dashboard
 python3 cli.py dashboard
 ```
+
+> On Windows, if `python3` isn't on your PATH, substitute `py -3` for `python3` in every command below.
 
 The command:
 1. Scans `~/.claude/projects/` (first run can take 20–60 seconds on a heavy user's machine).
@@ -61,7 +63,7 @@ python3 cli.py dashboard --projects-dir /path/to/projects --db /path/to/cache.db
 | Var | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | Port the local web server listens on |
-| `HOST` | `127.0.0.1` | Bind address (change to `0.0.0.0` only if you know what you're doing) |
+| `HOST` | `127.0.0.1` | Bind address. Keep the default. Setting `0.0.0.0` exposes your entire prompt history to anyone on your local network — don't do this on any network you don't fully control (no coffee-shop Wi-Fi, no coworking spaces). |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Where to scan for session JSONL files |
 | `TOKEN_DASHBOARD_DB` | `~/.claude/token-dashboard.db` | SQLite cache location |
 
@@ -113,7 +115,7 @@ Claude Code writes each assistant response 2–3 times to disk while it streams 
 
 ## Privacy
 
-Nothing leaves your machine. No telemetry. No remote calls for your data. The only outbound request the dashboard ever makes is the browser fetching its own JSON from `127.0.0.1`. If you want to verify: `grep -r "https://" token_dashboard/` — you'll find nothing.
+Nothing leaves your machine. No telemetry. No remote calls for your data. The browser fetches its JSON from `127.0.0.1`, and all JS/CSS/fonts are served from that same local server — ECharts is vendored into `web/`, and the UI falls back to system fonts rather than pulling from a font CDN. If you want to verify: `grep -r "https://" token_dashboard/ web/` — you'll find nothing.
 
 ## Tech stack
 

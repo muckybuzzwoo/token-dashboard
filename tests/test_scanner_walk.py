@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from token_dashboard.db import init_db
+from token_dashboard.db import init_db, overview_totals
 from token_dashboard.scanner import scan_dir
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -41,9 +41,18 @@ class WalkTests(unittest.TestCase):
         scan_dir(self.proj_root, self.db)
         path = os.path.join(self.proj_root, "C--work-sample", "s1.jsonl")
         with open(path, "a", encoding="utf-8") as f:
-            f.write('\n{"type":"assistant","uuid":"a2","sessionId":"s1","timestamp":"2026-04-10T00:00:03Z","isSidechain":false,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":1,"output_tokens":1}}}')
+            f.write('{"type":"assistant","uuid":"a2","sessionId":"s1","timestamp":"2026-04-10T00:00:03Z","isSidechain":false,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":1,"output_tokens":1}}}\n')
         n2 = scan_dir(self.proj_root, self.db)
         self.assertEqual(n2["messages"], 1)
+
+    def test_scan_rebuilds_overview_summaries(self):
+        scan_dir(self.proj_root, self.db)
+        with sqlite3.connect(self.db) as c:
+            c.execute("DELETE FROM messages")
+            c.commit()
+        totals = overview_totals(self.db)
+        self.assertEqual(totals["sessions"], 1)
+        self.assertEqual(totals["input_tokens"], 10)
 
 
 if __name__ == "__main__":

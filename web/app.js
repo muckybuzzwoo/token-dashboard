@@ -1,4 +1,5 @@
 // app.js — router, state, fetch helpers
+import { disposeMountedCharts } from '/web/charts.js';
 
 export const $  = (sel, root=document) => root.querySelector(sel);
 export const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
@@ -11,7 +12,7 @@ export const fmt = {
   usd4:  n => n == null ? '—' : '$' + Number(n).toFixed(4),
   pct:   n => n == null ? '—' : (n * 100).toFixed(0) + '%',
   short: (s, n=80) => s == null ? '' : (s.length > n ? s.slice(0, n - 1) + '…' : s),
-  htmlSafe: s => (s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])),
+  htmlSafe: s => (s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   modelClass: m => {
     const s = (m || '').toLowerCase();
     if (s.includes('opus'))   return 'opus';
@@ -20,13 +21,104 @@ export const fmt = {
     return '';
   },
   modelShort: m => (m || '').replace('claude-', ''),
-  ts: t => (t || '').slice(0, 16).replace('T', ' '),
+  ts: t => t ? new Date(t).toLocaleString('sv', { timeZone: 'America/New_York' }).slice(0, 16) : '',
 };
+
+/**
+ * Wire click-to-sort on all <th> in a table.
+ * Each <td> must carry a data-val attribute with the raw sort value.
+ * @param {HTMLTableElement} table
+ * @param {{ col?: number, dir?: 'asc'|'desc' }} opts  default sort column index + direction
+ */
+export function makeSortable(table, { col: defaultCol = 0, dir: defaultDir = 'asc', onChange } = {}) {
+  let sortCol = defaultCol;
+  let sortDir = defaultDir;
+  const ths = [...table.querySelectorAll('thead th')];
+  const tbody = table.querySelector('tbody');
+
+  function applySort() {
+    ths.forEach((th, i) => {
+      th.classList.toggle('sort-asc',  i === sortCol && sortDir === 'asc');
+      th.classList.toggle('sort-desc', i === sortCol && sortDir === 'desc');
+    });
+    const rows = [...tbody.querySelectorAll('tr')];
+    rows.sort((a, b) => {
+      const av = a.cells[sortCol]?.dataset.val ?? '';
+      const bv = b.cells[sortCol]?.dataset.val ?? '';
+      const an = Number(av), bn = Number(bv);
+      const numeric = av !== '' && bv !== '' && !isNaN(an) && !isNaN(bn);
+      const cmp = numeric ? an - bn : av.localeCompare(bv, undefined, { sensitivity: 'base' });
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+  }
+
+  ths.forEach((th, i) => {
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      if (sortCol === i) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      else { sortCol = i; sortDir = 'asc'; }
+      applySort();
+      if (onChange) onChange(sortCol, sortDir);
+    });
+  });
+
+  applySort(); // initial sort — no callback, state came from caller
+}
 
 export async function api(path, opts) {
   const r = await fetch(path, opts);
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json();
+}
+
+// ── Client-side response cache ────────────────────────────────────────────────
+// Keyed by URL, entries expire after 60s. Cleared when SSE signals new data.
+const _cache = new Map();
+const _CACHE_TTL = 60_000;
+
+export function cacheGet(key) {
+  const e = _cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > _CACHE_TTL) { _cache.delete(key); return null; }
+  return e.data;
+}
+export function cacheSet(key, data) { _cache.set(key, { data, ts: Date.now() }); }
+export function cacheClear()        { _cache.clear(); }
+
+// ── Refresh / countdown state ─────────────────────────────────────────────────
+const SCAN_INTERVAL = 60_000; // must match server _scan_loop interval
+let _nextScanAt  = Date.now() + SCAN_INTERVAL;
+let _scanning    = false;
+let _hasNewData  = false;
+
+function updateRefreshBtn() {
+  const btn = document.getElementById('refresh-btn');
+  if (!btn) return;
+  if (_scanning) {
+    btn.textContent = '↻ …';
+    btn.className = 'refresh-btn scanning';
+    return;
+  }
+  if (_hasNewData) {
+    btn.textContent = '↻ new data';
+    btn.className = 'refresh-btn has-data';
+    return;
+  }
+  const secs = Math.max(0, Math.round((_nextScanAt - Date.now()) / 1000));
+  btn.textContent = `↻ ${secs}s`;
+  btn.className = 'refresh-btn';
+}
+
+function setScanning(on) {
+  _scanning = on;
+  const banner = document.getElementById('refresh-banner');
+  if (on) {
+    if (banner) banner.classList.remove('hidden');
+  } else {
+    if (banner) banner.classList.add('hidden');
+  }
+  updateRefreshBtn();
 }
 
 export const state = { plan: 'api', pricing: null };
@@ -38,6 +130,7 @@ const ROUTES = {
   '/projects': () => import('/web/routes/projects.js'),
   '/skills':   () => import('/web/routes/skills.js'),
   '/tips':     () => import('/web/routes/tips.js'),
+  '/rtk':      () => import('/web/routes/rtk.js'),
   '/settings': () => import('/web/routes/settings.js'),
 };
 
@@ -52,15 +145,28 @@ function buildTopbar() {
     <div class="spacer"></div>
     <span class="pill" id="plan-pill">api</span>
     <span class="pill muted" title="Cmd/Ctrl+B blurs sensitive text">⌘B blur</span>
+    <button id="refresh-btn" class="refresh-btn" title="Manually refresh data">↻ 60s</button>
   `;
   document.body.prepend(wrap);
+
+  // Refresh banner — inserted between topbar and #app
+  const banner = document.createElement('div');
+  banner.id = 'refresh-banner';
+  banner.className = 'refresh-banner hidden';
+  banner.innerHTML = '<span class="spin">↻</span><span>Getting latest data…</span>';
+  document.body.insertBefore(banner, document.getElementById('app'));
 }
 
 function setActiveTab(routeKey) {
   $$('header.topbar nav a').forEach(a => a.classList.toggle('active', a.dataset.route === routeKey));
 }
 
+// Generation counter prevents a slow fetch from a stale render() call
+// from overwriting DOM that a newer render() already populated.
+let _renderGen = 0;
+
 async function render() {
+  const gen = ++_renderGen;
   const hash = location.hash.replace(/^#/, '') || '/overview';
   const path = hash.split('?')[0];
   let key = path;
@@ -68,6 +174,8 @@ async function render() {
   setActiveTab(key);
   const loader = ROUTES[key] || ROUTES['/overview'];
   const mod = await loader();
+  if (gen !== _renderGen) return; // a newer render() won the race — bail out
+  disposeMountedCharts();         // dispose all live ECharts instances before clearing DOM
   $('#app').innerHTML = '';
   try {
     await mod.default($('#app'));
@@ -124,13 +232,45 @@ async function boot() {
     }
   });
 
-  // SSE diff stream
+  // Refresh button:
+  //   - If new data is buffered → apply it (re-render current page)
+  //   - If scanning → ignore (already in flight)
+  //   - Otherwise → trigger a manual server scan
+  document.getElementById('refresh-btn').addEventListener('click', async () => {
+    if (_scanning) return;
+    if (_hasNewData) {
+      _hasNewData = false;
+      render();
+      return;
+    }
+    setScanning(true);
+    _nextScanAt = Date.now() + SCAN_INTERVAL;
+    try { await fetch('/api/refresh', { method: 'POST' }); } catch {}
+  });
+
+  // Countdown ticker — updates the button label every second.
+  // When the countdown hits 0, the server scan is imminent; show scanning state.
+  setInterval(() => {
+    updateRefreshBtn();
+    const secs = Math.max(0, Math.round((_nextScanAt - Date.now()) / 1000));
+    if (!_scanning && !_hasNewData && secs === 0) setScanning(true);
+  }, 1000);
+
+  // SSE diff stream.
+  // On scan: invalidate caches and show "new data" badge — do NOT auto-render.
+  // Re-rendering charts on every background scan caused ECharts instance
+  // accumulation and crashed the browser. User controls when to apply updates.
   try {
     const es = new EventSource('/api/stream');
     es.onmessage = ev => {
       try {
         const evt = JSON.parse(ev.data);
-        if (evt.type === 'scan') render();
+        if (evt.type === 'scan') {
+          cacheClear();
+          _nextScanAt = Date.now() + SCAN_INTERVAL;
+          _hasNewData = true;
+          setScanning(false); // clears spinner; updateRefreshBtn() shows "new data"
+        }
       } catch {}
     };
   } catch {}

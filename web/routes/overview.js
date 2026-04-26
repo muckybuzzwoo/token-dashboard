@@ -1,4 +1,4 @@
-import { api, fmt, state } from '/web/app.js';
+import { api, fmt, state, cacheGet, cacheSet } from '/web/app.js';
 import { barChart, donutChart, groupedBarChart, stackedBarChart } from '/web/charts.js';
 
 const RANGES = [
@@ -33,16 +33,21 @@ function withSince(url, since) {
 export default async function (root) {
   const range = readRange();
   const since = sinceIso(range);
+  const url   = withSince('/api/overview-bundle', since);
 
-  const [totals, projects, sessions, tools, daily, byModel] = await Promise.all([
-    api(withSince('/api/overview', since)),
-    api(withSince('/api/projects', since)),
-    api(withSince('/api/sessions?limit=10', since)),
-    api(withSince('/api/tools', since)),
-    api(withSince('/api/daily', since)),
-    api(withSince('/api/by-model', since)),
-  ]);
+  // Single render — cache hit is instant, cache miss hits warm server cache.
+  // No background prefetch: when the cache was just cleared (refresh / SSE
+  // scan event), prefetching all 4 ranges in parallel slammed the server
+  // with 4 cold-cache bundle queries simultaneously. Server's own warming
+  // threads cover this without piling on from the client.
+  const cached = cacheGet(url);
+  if (cached) { renderBundle(root, cached, range); return; }
+  const fresh = await api(url);
+  cacheSet(url, fresh);
+  renderBundle(root, fresh, range);
+}
 
+function renderBundle(root, { totals, projects, sessions, tools, daily, byModel }, range) {
   const cacheCreate =
     (totals.cache_create_5m_tokens || 0) +
     (totals.cache_create_1h_tokens || 0);
@@ -134,12 +139,10 @@ export default async function (root) {
     </div>
   `;
 
-  // range buttons
   root.querySelectorAll('.range-tabs button').forEach(btn => {
     btn.addEventListener('click', () => writeRange(btn.dataset.range));
   });
 
-  // Your daily work — billable tokens (input + output + cache create)
   stackedBarChart(document.getElementById('ch-daily-billable'), {
     categories: daily.map(d => d.day),
     series: [
@@ -149,7 +152,6 @@ export default async function (root) {
     ],
   });
 
-  // Daily cache reads (separate — scale is 100× larger)
   stackedBarChart(document.getElementById('ch-daily-cache'), {
     categories: daily.map(d => d.day),
     series: [
@@ -157,7 +159,6 @@ export default async function (root) {
     ],
   });
 
-  // by-model doughnut
   donutChart(document.getElementById('ch-model'),
     byModel.map(m => ({
       name: fmt.modelShort(m.model) || 'unknown',
@@ -166,7 +167,6 @@ export default async function (root) {
     })).filter(d => d.value > 0),
   );
 
-  // tokens by project — input vs output
   const topProjects = projects.slice(0, 8);
   groupedBarChart(document.getElementById('ch-projects'), {
     categories: topProjects.map(p => {
@@ -179,7 +179,6 @@ export default async function (root) {
     ],
   });
 
-  // top tools
   const topTools = tools.slice(0, 8);
   barChart(document.getElementById('ch-tools'), {
     categories: topTools.map(t => t.tool_name),

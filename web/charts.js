@@ -1,5 +1,19 @@
 // charts.js — themed ECharts wrappers
 
+// All live instances + their ResizeObservers are tracked so render() can
+// fully tear them down before clearing the DOM. Without disconnect(), ROs
+// stay registered with the browser, holding closures to disposed charts —
+// they accumulate across every render and weigh down layout cycles.
+const _live = new Map(); // chart instance → ResizeObserver
+
+export function disposeMountedCharts() {
+  for (const [c, ro] of _live) {
+    try { ro.disconnect(); } catch {}
+    if (!c.isDisposed()) c.dispose();
+  }
+  _live.clear();
+}
+
 const PALETTE = ['#4A9EFF', '#7C5CFF', '#3FB68B', '#E8A23B', '#E5484D', '#5BCEDA', '#F472B6'];
 
 const BASE = {
@@ -31,14 +45,29 @@ const TOOLTIP = {
 };
 
 function mount(el) {
-  const c = echarts.init(el, null, { renderer: 'svg' });
-  window.addEventListener('resize', () => c.resize());
+  const existing = echarts.getInstanceByDom(el);
+  if (existing) {
+    const oldRo = _live.get(existing);
+    if (oldRo) { try { oldRo.disconnect(); } catch {} }
+    _live.delete(existing);
+    existing.dispose();
+  }
+  // Canvas renderer is 3-5× faster than SVG for line+area charts and animates
+  // far cheaper. Animations disabled — entrance animations on every refresh
+  // were dropping frames for 1-2s each render.
+  const c = echarts.init(el, null, { renderer: 'canvas' });
+  const ro = new ResizeObserver(() => { if (!c.isDisposed()) c.resize(); });
+  ro.observe(el);
+  _live.set(c, ro);
   return c;
 }
+
+const NO_ANIM = { animation: false };
 
 export function lineChart(el, { x, series }) {
   const c = mount(el);
   c.setOption({
+    ...NO_ANIM,
     ...BASE,
     tooltip: TOOLTIP,
     legend: { textStyle: { color: '#8B98A6' }, top: 0, right: 0, icon: 'roundRect', itemWidth: 8, itemHeight: 8 },
@@ -55,6 +84,7 @@ export function lineChart(el, { x, series }) {
 export function barChart(el, { categories, values, color }) {
   const c = mount(el);
   c.setOption({
+    ...NO_ANIM,
     ...BASE,
     tooltip: { ...TOOLTIP, axisPointer: { type: 'shadow' } },
     xAxis: { ...X_AXIS, type: 'category', data: categories, axisLabel: { ...X_AXIS.axisLabel, interval: 0, rotate: categories.length > 5 ? 25 : 0 } },
@@ -71,6 +101,7 @@ export function barChart(el, { categories, values, color }) {
 export function stackedBarChart(el, { categories, series, formatter }) {
   const c = mount(el);
   c.setOption({
+    ...NO_ANIM,
     ...BASE,
     tooltip: {
       ...TOOLTIP,
@@ -103,6 +134,7 @@ export function stackedBarChart(el, { categories, series, formatter }) {
 export function groupedBarChart(el, { categories, series, formatter }) {
   const c = mount(el);
   c.setOption({
+    ...NO_ANIM,
     ...BASE,
     tooltip: {
       ...TOOLTIP,
@@ -134,6 +166,7 @@ export function groupedBarChart(el, { categories, series, formatter }) {
 export function donutChart(el, data) {
   const c = mount(el);
   c.setOption({
+    ...NO_ANIM,
     color: PALETTE,
     tooltip: {
       trigger: 'item',

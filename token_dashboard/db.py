@@ -47,6 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_project   ON messages(project_slug);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_model     ON messages(model);
 CREATE INDEX IF NOT EXISTS idx_messages_msgid     ON messages(session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_date      ON messages(substr(timestamp,1,10));
+CREATE INDEX IF NOT EXISTS idx_messages_type_model ON messages(type, model);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp_session ON messages(timestamp, session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp_project ON messages(timestamp, project_slug);
+CREATE INDEX IF NOT EXISTS idx_messages_type_timestamp_model ON messages(type, timestamp, model);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +67,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tools_name    ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tools_target  ON tool_calls(target);
+CREATE INDEX IF NOT EXISTS idx_tools_timestamp_name ON tool_calls(timestamp, tool_name);
 
 CREATE TABLE IF NOT EXISTS plan (
   k TEXT PRIMARY KEY,
@@ -72,6 +78,70 @@ CREATE TABLE IF NOT EXISTS dismissed_tips (
   tip_key       TEXT PRIMARY KEY,
   dismissed_at  REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS summary_meta (
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS summary_daily (
+  day                    TEXT PRIMARY KEY,
+  turns                  INTEGER NOT NULL DEFAULT 0,
+  input_tokens           INTEGER NOT NULL DEFAULT 0,
+  output_tokens          INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS summary_projects (
+  day                    TEXT NOT NULL,
+  project_slug           TEXT NOT NULL,
+  sample_cwd             TEXT,
+  turns                  INTEGER NOT NULL DEFAULT 0,
+  input_tokens           INTEGER NOT NULL DEFAULT 0,
+  output_tokens          INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, project_slug)
+);
+
+CREATE TABLE IF NOT EXISTS summary_models (
+  day                    TEXT NOT NULL,
+  model                  TEXT NOT NULL,
+  turns                  INTEGER NOT NULL DEFAULT 0,
+  input_tokens           INTEGER NOT NULL DEFAULT 0,
+  output_tokens          INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, model)
+);
+
+CREATE TABLE IF NOT EXISTS summary_tools (
+  day           TEXT NOT NULL,
+  tool_name     TEXT NOT NULL,
+  calls         INTEGER NOT NULL DEFAULT 0,
+  result_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, tool_name)
+);
+
+CREATE TABLE IF NOT EXISTS summary_sessions (
+  session_id              TEXT PRIMARY KEY,
+  project_slug            TEXT NOT NULL,
+  sample_cwd              TEXT,
+  started                 TEXT NOT NULL,
+  ended                   TEXT NOT NULL,
+  turns                   INTEGER NOT NULL DEFAULT 0,
+  input_tokens            INTEGER NOT NULL DEFAULT 0,
+  output_tokens           INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
+  cache_create_5m_tokens  INTEGER NOT NULL DEFAULT 0,
+  cache_create_1h_tokens  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_summary_sessions_ended ON summary_sessions(ended);
+CREATE INDEX IF NOT EXISTS idx_summary_sessions_project ON summary_sessions(project_slug);
 """
 
 
@@ -83,6 +153,7 @@ def init_db(path: Union[str, Path]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as c:
+        c.execute("PRAGMA journal_mode=WAL")
         _migrate_add_message_id(c)
         c.executescript(SCHEMA)
 
@@ -112,9 +183,10 @@ def _migrate_add_message_id(conn) -> None:
 
 @contextmanager
 def connect(path: Union[str, Path]):
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA cache_size=-65536")  # 64 MB page cache ceiling
     try:
         yield conn
     finally:
@@ -128,6 +200,168 @@ def _range_clause(since, until, col: str = "timestamp"):
     if until:
         where.append(f"{col} < ?"); args.append(until)
     return ((" AND " + " AND ".join(where)) if where else "", args)
+
+
+def _date_range_clause(since, until, col: str = "substr(timestamp, 1, 10)"):
+    where, args = [], []
+    if since:
+        where.append(f"{col} >= ?"); args.append(since[:10])
+    if until:
+        where.append(f"{col} < ?"); args.append(until[:10])
+    return ((" AND " + " AND ".join(where)) if where else "", args)
+
+
+def _summary_ready(conn) -> bool:
+    row = conn.execute("SELECT v FROM summary_meta WHERE k='last_rebuild'").fetchone()
+    return row is not None
+
+
+def summaries_ready(db_path) -> bool:
+    with connect(db_path) as c:
+        return _summary_ready(c)
+
+
+def rebuild_summaries(db_path, days=None, sessions=None) -> None:
+    """Rebuild aggregate tables used by overview endpoints.
+
+    These summaries keep refresh-time overview queries bounded by days,
+    projects, tools, models, and sessions instead of raw message volume.
+    """
+    days = {d for d in (days or set()) if d}
+    sessions = {s for s in (sessions or set()) if s}
+    full = not days and not sessions
+    with connect(db_path) as c:
+        if full:
+            c.execute("DELETE FROM summary_meta")
+            c.execute("DELETE FROM summary_daily")
+            c.execute("DELETE FROM summary_projects")
+            c.execute("DELETE FROM summary_models")
+            c.execute("DELETE FROM summary_tools")
+            c.execute("DELETE FROM summary_sessions")
+            day_filter = ""
+            day_args = ()
+            session_filter = ""
+            session_args = ()
+        else:
+            day_args = tuple(sorted(days))
+            session_args = tuple(sorted(sessions))
+            day_ph = ",".join("?" * len(day_args))
+            session_ph = ",".join("?" * len(session_args))
+            day_filter = f" AND substr(timestamp, 1, 10) IN ({day_ph})" if day_args else " AND 0"
+            session_filter = f" AND session_id IN ({session_ph})" if session_args else " AND 0"
+            if day_args:
+                c.execute(f"DELETE FROM summary_daily WHERE day IN ({day_ph})", day_args)
+                c.execute(f"DELETE FROM summary_projects WHERE day IN ({day_ph})", day_args)
+                c.execute(f"DELETE FROM summary_models WHERE day IN ({day_ph})", day_args)
+                c.execute(f"DELETE FROM summary_tools WHERE day IN ({day_ph})", day_args)
+            if session_args:
+                c.execute(f"DELETE FROM summary_sessions WHERE session_id IN ({session_ph})", session_args)
+
+        c.execute("""
+          INSERT INTO summary_daily (
+            day, turns, input_tokens, output_tokens, cache_read_tokens,
+            cache_create_5m_tokens, cache_create_1h_tokens
+          )
+          SELECT substr(timestamp, 1, 10) AS day,
+                 SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+                 COALESCE(SUM(input_tokens),0),
+                 COALESCE(SUM(output_tokens),0),
+                 COALESCE(SUM(cache_read_tokens),0),
+                 COALESCE(SUM(cache_create_5m_tokens),0),
+                 COALESCE(SUM(cache_create_1h_tokens),0)
+            FROM messages
+           WHERE timestamp IS NOT NULL
+        """ + day_filter + """
+           GROUP BY day
+        """, day_args)
+
+        c.execute("""
+          INSERT INTO summary_projects (
+            day, project_slug, sample_cwd, turns, input_tokens, output_tokens,
+            cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens
+          )
+          SELECT substr(timestamp, 1, 10) AS day,
+                 project_slug,
+                 MIN(cwd),
+                 SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+                 COALESCE(SUM(input_tokens),0),
+                 COALESCE(SUM(output_tokens),0),
+                 COALESCE(SUM(cache_read_tokens),0),
+                 COALESCE(SUM(cache_create_5m_tokens),0),
+                 COALESCE(SUM(cache_create_1h_tokens),0)
+            FROM messages
+           WHERE timestamp IS NOT NULL
+        """ + day_filter + """
+           GROUP BY day, project_slug
+        """, day_args)
+
+        c.execute("""
+          INSERT INTO summary_models (
+            day, model, turns, input_tokens, output_tokens, cache_read_tokens,
+            cache_create_5m_tokens, cache_create_1h_tokens
+          )
+          SELECT substr(timestamp, 1, 10) AS day,
+                 COALESCE(model, 'unknown') AS model,
+                 COUNT(*) AS turns,
+                 COALESCE(SUM(input_tokens),0),
+                 COALESCE(SUM(output_tokens),0),
+                 COALESCE(SUM(cache_read_tokens),0),
+                 COALESCE(SUM(cache_create_5m_tokens),0),
+                 COALESCE(SUM(cache_create_1h_tokens),0)
+            FROM messages
+           WHERE type='assistant' AND timestamp IS NOT NULL
+        """ + day_filter + """
+           GROUP BY day, COALESCE(model, 'unknown')
+        """, day_args)
+
+        c.execute("""
+          INSERT INTO summary_tools (day, tool_name, calls, result_tokens)
+          SELECT substr(timestamp, 1, 10) AS day,
+                 tool_name,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(result_tokens),0) AS result_tokens
+            FROM tool_calls
+           WHERE tool_name != '_tool_result' AND timestamp IS NOT NULL
+        """ + day_filter + """
+           GROUP BY day, tool_name
+        """, day_args)
+
+        c.execute("""
+          INSERT INTO summary_sessions (
+            session_id, project_slug, sample_cwd, started, ended, turns,
+            input_tokens, output_tokens, cache_read_tokens,
+            cache_create_5m_tokens, cache_create_1h_tokens
+          )
+          SELECT session_id,
+                 MIN(project_slug),
+                 MIN(cwd),
+                 MIN(timestamp),
+                 MAX(timestamp),
+                 SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+                 COALESCE(SUM(input_tokens),0),
+                 COALESCE(SUM(output_tokens),0),
+                 COALESCE(SUM(cache_read_tokens),0),
+                 COALESCE(SUM(cache_create_5m_tokens),0),
+                 COALESCE(SUM(cache_create_1h_tokens),0)
+            FROM messages
+           WHERE 1=1
+        """ + session_filter + """
+           GROUP BY session_id
+        """, session_args)
+
+        c.execute(
+            "INSERT OR REPLACE INTO summary_meta (k, v) VALUES ('last_rebuild', strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+        )
+        c.commit()
+
+
+def _session_range_clause(since, until):
+    where, args = [], []
+    if since:
+        where.append("ended >= ?"); args.append(since)
+    if until:
+        where.append("started < ?"); args.append(until)
+    return ((" WHERE " + " AND ".join(where)) if where else "", args)
 
 
 def _encode_slug(path: str) -> str:
@@ -199,6 +433,23 @@ def overview_totals(db_path, since=None, until=None) -> dict:
         FROM messages WHERE 1=1 {rng}
     """
     with connect(db_path) as c:
+        if _summary_ready(c):
+            day_rng, day_args = _date_range_clause(since, until, col="day")
+            sess_where, sess_args = _session_range_clause(since, until)
+            totals = dict(c.execute(f"""
+              SELECT COALESCE(SUM(turns),0)                  AS turns,
+                     COALESCE(SUM(input_tokens),0)           AS input_tokens,
+                     COALESCE(SUM(output_tokens),0)          AS output_tokens,
+                     COALESCE(SUM(cache_read_tokens),0)      AS cache_read_tokens,
+                     COALESCE(SUM(cache_create_5m_tokens),0) AS cache_create_5m_tokens,
+                     COALESCE(SUM(cache_create_1h_tokens),0) AS cache_create_1h_tokens
+                FROM summary_daily
+               WHERE 1=1 {day_rng}
+            """, day_args).fetchone())
+            totals["sessions"] = c.execute(
+                f"SELECT COUNT(*) FROM summary_sessions{sess_where}", sess_args
+            ).fetchone()[0]
+            return totals
         return dict(c.execute(sql, args).fetchone())
 
 
@@ -230,6 +481,7 @@ def project_summary(db_path, since=None, until=None) -> list:
     rng, args = _range_clause(since, until)
     sql = f"""
       SELECT project_slug,
+             MIN(cwd) AS sample_cwd,
              COUNT(DISTINCT session_id) AS sessions,
              SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
@@ -243,13 +495,38 @@ def project_summary(db_path, since=None, until=None) -> list:
        ORDER BY billable_tokens DESC
     """
     with connect(db_path) as c:
+        if _summary_ready(c):
+            day_rng, day_args = _date_range_clause(since, until, col="day")
+            sess_where, sess_args = _session_range_clause(since, until)
+            session_sql = f"""
+              SELECT project_slug, COUNT(*) AS sessions
+                FROM summary_sessions
+                {sess_where}
+               GROUP BY project_slug
+            """
+            rows = [dict(r) for r in c.execute(f"""
+              SELECT p.project_slug,
+                     MIN(p.sample_cwd) AS sample_cwd,
+                     COALESCE(s.sessions, 0) AS sessions,
+                     COALESCE(SUM(p.turns), 0) AS turns,
+                     COALESCE(SUM(p.input_tokens), 0) AS input_tokens,
+                     COALESCE(SUM(p.output_tokens), 0) AS output_tokens,
+                     COALESCE(SUM(p.input_tokens),0)+COALESCE(SUM(p.output_tokens),0)
+                       +COALESCE(SUM(p.cache_create_5m_tokens),0)
+                       +COALESCE(SUM(p.cache_create_1h_tokens),0) AS billable_tokens,
+                     COALESCE(SUM(p.cache_read_tokens), 0) AS cache_read_tokens
+                FROM summary_projects p
+                LEFT JOIN ({session_sql}) s ON s.project_slug = p.project_slug
+               WHERE 1=1 {day_rng}
+               GROUP BY p.project_slug
+               ORDER BY billable_tokens DESC
+            """, (*sess_args, *day_args))]
+            for r in rows:
+                r["project_name"] = project_name_for(r.pop("sample_cwd", None), r["project_slug"])
+            return rows
         rows = [dict(r) for r in c.execute(sql, args)]
         for r in rows:
-            cwds = [row["cwd"] for row in c.execute(
-                "SELECT DISTINCT cwd FROM messages WHERE project_slug=? AND cwd IS NOT NULL",
-                (r["project_slug"],),
-            )]
-            r["project_name"] = best_project_name(cwds, r["project_slug"])
+            r["project_name"] = project_name_for(r.pop("sample_cwd", None), r["project_slug"])
     return rows
 
 
@@ -265,6 +542,17 @@ def tool_token_breakdown(db_path, since=None, until=None) -> list:
        ORDER BY calls DESC
     """
     with connect(db_path) as c:
+        if _summary_ready(c):
+            day_rng, day_args = _date_range_clause(since, until, col="day")
+            return [dict(r) for r in c.execute(f"""
+              SELECT tool_name,
+                     COALESCE(SUM(calls),0) AS calls,
+                     COALESCE(SUM(result_tokens),0) AS result_tokens
+                FROM summary_tools
+               WHERE 1=1 {day_rng}
+               GROUP BY tool_name
+               ORDER BY calls DESC
+            """, day_args)]
         return [dict(r) for r in c.execute(sql, args)]
 
 
@@ -272,6 +560,7 @@ def recent_sessions(db_path, limit: int = 20, since=None, until=None) -> list:
     rng, args = _range_clause(since, until)
     sql = f"""
       SELECT session_id, project_slug,
+             MIN(cwd) AS sample_cwd,
              MIN(timestamp) AS started, MAX(timestamp) AS ended,
              SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
              SUM(input_tokens)+SUM(output_tokens) AS tokens
@@ -282,18 +571,23 @@ def recent_sessions(db_path, limit: int = 20, since=None, until=None) -> list:
        LIMIT ?
     """
     with connect(db_path) as c:
+        if _summary_ready(c):
+            sess_where, sess_args = _session_range_clause(since, until)
+            rows = [dict(r) for r in c.execute(f"""
+              SELECT session_id, project_slug, sample_cwd,
+                     started, ended, turns,
+                     input_tokens + output_tokens AS tokens
+                FROM summary_sessions
+                {sess_where}
+               ORDER BY ended DESC
+               LIMIT ?
+            """, (*sess_args, limit))]
+            for r in rows:
+                r["project_name"] = project_name_for(r.pop("sample_cwd", None), r["project_slug"])
+            return rows
         rows = [dict(r) for r in c.execute(sql, (*args, limit))]
-        # Cache per-slug name lookups so we don't query once per session.
-        slug_cache = {}
         for r in rows:
-            slug = r["project_slug"]
-            if slug not in slug_cache:
-                cwds = [row["cwd"] for row in c.execute(
-                    "SELECT DISTINCT cwd FROM messages WHERE project_slug=? AND cwd IS NOT NULL",
-                    (slug,),
-                )]
-                slug_cache[slug] = best_project_name(cwds, slug)
-            r["project_name"] = slug_cache[slug]
+            r["project_name"] = project_name_for(r.pop("sample_cwd", None), r["project_slug"])
     return rows
 
 
@@ -313,7 +607,7 @@ def session_turns(db_path, session_id: str) -> list:
 
 def daily_token_breakdown(db_path, since=None, until=None) -> list:
     """One row per day: stacked bar data for input/output/cache_read/cache_create."""
-    rng, args = _range_clause(since, until)
+    rng, args = _date_range_clause(since, until)
     sql = f"""
       SELECT substr(timestamp, 1, 10) AS day,
              COALESCE(SUM(input_tokens),0)      AS input_tokens,
@@ -327,6 +621,18 @@ def daily_token_breakdown(db_path, since=None, until=None) -> list:
        ORDER BY day ASC
     """
     with connect(db_path) as c:
+        if _summary_ready(c):
+            day_rng, day_args = _date_range_clause(since, until, col="day")
+            return [dict(r) for r in c.execute(f"""
+              SELECT day,
+                     input_tokens,
+                     output_tokens,
+                     cache_read_tokens,
+                     cache_create_5m_tokens + cache_create_1h_tokens AS cache_create_tokens
+                FROM summary_daily
+               WHERE 1=1 {day_rng}
+               ORDER BY day ASC
+            """, day_args)]
         return [dict(r) for r in c.execute(sql, args)]
 
 
@@ -373,4 +679,19 @@ def model_breakdown(db_path, since=None, until=None) -> list:
        ORDER BY (input_tokens + output_tokens + cache_create_5m_tokens + cache_create_1h_tokens) DESC
     """
     with connect(db_path) as c:
+        if _summary_ready(c):
+            day_rng, day_args = _date_range_clause(since, until, col="day")
+            return [dict(r) for r in c.execute(f"""
+              SELECT model,
+                     COALESCE(SUM(turns),0) AS turns,
+                     COALESCE(SUM(input_tokens),0) AS input_tokens,
+                     COALESCE(SUM(output_tokens),0) AS output_tokens,
+                     COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens,
+                     COALESCE(SUM(cache_create_5m_tokens),0) AS cache_create_5m_tokens,
+                     COALESCE(SUM(cache_create_1h_tokens),0) AS cache_create_1h_tokens
+                FROM summary_models
+               WHERE 1=1 {day_rng}
+               GROUP BY model
+               ORDER BY (input_tokens + output_tokens + cache_create_5m_tokens + cache_create_1h_tokens) DESC
+            """, day_args)]
         return [dict(r) for r in c.execute(sql, args)]

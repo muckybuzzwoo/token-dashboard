@@ -130,6 +130,17 @@ td.num, th.num {
 }
 td.mono { font-family: var(--mono); color: var(--muted); }
 
+/* sortable column headers */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+th.sortable:hover { color: var(--text); }
+th.sortable::after { content: ''; display: inline-block; width: 12px; }
+th.sort-asc::after  { content: ' ▲'; width: auto; color: var(--accent); }
+th.sort-desc::after { content: ' ▼'; width: auto; color: var(--accent); }
+
 /* badges */
 .badge {
   display: inline-block; padding: 2px 7px; border-radius: 4px;
@@ -179,6 +190,33 @@ button.ghost { background: transparent; color: var(--muted); }
   color: var(--muted); font-size: 12px; font-family: var(--mono);
 }
 .range-tabs button.active { background: var(--bg); color: var(--text); }
+
+/* refresh button + countdown */
+.refresh-btn {
+  padding: 4px 10px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--muted); font-family: var(--mono); font-size: 12px;
+  cursor: pointer; min-width: 68px; text-align: center;
+  transition: color 120ms, border-color 120ms;
+}
+.refresh-btn:hover { color: var(--text); border-color: var(--border-2); }
+.refresh-btn.scanning { color: var(--accent); border-color: rgba(74,158,255,0.3); }
+.refresh-btn.has-data { color: var(--good); border-color: rgba(63,182,139,0.4); }
+
+/* refresh banner */
+@keyframes spin { to { transform: rotate(360deg); } }
+.refresh-banner {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 7px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  color: var(--muted); font-size: 12px;
+}
+.refresh-banner.hidden { display: none; }
+.refresh-banner .spin, .spin {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+  color: var(--accent);
+}
 
 /* privacy blur */
 .blur-sensitive { transition: filter 120ms; }

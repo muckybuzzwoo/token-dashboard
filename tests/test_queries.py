@@ -7,7 +7,7 @@ from token_dashboard.db import (
     overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, project_name_for,
-    skill_breakdown,
+    skill_breakdown, rebuild_summaries,
 )
 
 
@@ -95,6 +95,104 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(names, ["claude-sonnet-4-6"])
 
 
+class SummaryQueryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "summary.db")
+        init_db(self.db)
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, cwd, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens)
+            VALUES
+              ('u1',NULL,'s1','projA','/work/projA','user','2026-04-10T00:00:00Z',NULL,0,0,0,0,0),
+              ('a1','u1','s1','projA','/work/projA','assistant','2026-04-10T00:00:01Z','claude-opus-4-7',100,200,300,10,20),
+              ('u2',NULL,'s2','projB','/work/projB','user','2026-04-11T00:00:00Z',NULL,0,0,0,0,0),
+              ('a2','u2','s2','projB','/work/projB','assistant','2026-04-11T00:00:01Z','claude-sonnet-4-6',5,6,7,8,9);
+            INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, timestamp, is_error)
+            VALUES
+              ('a1','s1','projA','Read','foo.py',50,'2026-04-10T00:00:01Z',0),
+              ('a1','s1','projA','Bash','npm test',100,'2026-04-10T00:00:02Z',0),
+              ('a2','s2','projB','Read','bar.py',25,'2026-04-11T00:00:01Z',0);
+            """)
+            c.commit()
+
+    def test_overview_queries_can_read_from_summaries_without_raw_rows(self):
+        rebuild_summaries(self.db)
+        with connect(self.db) as c:
+            c.execute("DELETE FROM messages")
+            c.execute("DELETE FROM tool_calls")
+            c.commit()
+
+        totals = overview_totals(self.db)
+        self.assertEqual(totals["sessions"], 2)
+        self.assertEqual(totals["turns"], 2)
+        self.assertEqual(totals["input_tokens"], 105)
+        self.assertEqual(totals["output_tokens"], 206)
+        self.assertEqual(totals["cache_create_5m_tokens"], 18)
+        self.assertEqual(totals["cache_create_1h_tokens"], 29)
+
+        projects = {r["project_slug"]: r for r in project_summary(self.db)}
+        self.assertEqual(projects["projA"]["billable_tokens"], 330)
+        self.assertEqual(projects["projA"]["project_name"], "projA")
+
+        tools = {r["tool_name"]: r for r in tool_token_breakdown(self.db)}
+        self.assertEqual(tools["Read"]["calls"], 2)
+        self.assertEqual(tools["Read"]["result_tokens"], 75)
+
+        daily = {r["day"]: r for r in daily_token_breakdown(self.db)}
+        self.assertEqual(daily["2026-04-10"]["cache_create_tokens"], 30)
+
+        models = {r["model"]: r for r in model_breakdown(self.db)}
+        self.assertEqual(models["claude-opus-4-7"]["cache_read_tokens"], 300)
+
+        sessions = recent_sessions(self.db, limit=1)
+        self.assertEqual(sessions[0]["session_id"], "s2")
+        self.assertEqual(sessions[0]["tokens"], 11)
+
+    def test_summary_queries_respect_date_ranges(self):
+        rebuild_summaries(self.db)
+        with connect(self.db) as c:
+            c.execute("DELETE FROM messages")
+            c.execute("DELETE FROM tool_calls")
+            c.commit()
+
+        totals = overview_totals(self.db, since="2026-04-11T00:00:00Z")
+        self.assertEqual(totals["sessions"], 1)
+        self.assertEqual(totals["input_tokens"], 5)
+
+        projects = project_summary(self.db, since="2026-04-11T00:00:00Z")
+        self.assertEqual([r["project_slug"] for r in projects], ["projB"])
+
+    def test_partial_summary_rebuild_updates_only_requested_days_and_sessions(self):
+        rebuild_summaries(self.db)
+        with connect(self.db) as c:
+            c.execute("""
+                INSERT INTO messages (uuid, session_id, project_slug, cwd, type, timestamp, model,
+                  input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens)
+                VALUES ('a3','s2','projB','/work/projB','assistant','2026-04-11T00:00:02Z',
+                  'claude-sonnet-4-6',20,30,40,50,60)
+            """)
+            c.execute("""
+                INSERT INTO messages (uuid, session_id, project_slug, cwd, type, timestamp, model,
+                  input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens)
+                VALUES ('a4','s3','projC','/work/projC','assistant','2026-04-12T00:00:01Z',
+                  'claude-haiku-4-5',1,2,3,4,5)
+            """)
+            c.commit()
+
+        rebuild_summaries(self.db, days={"2026-04-11"}, sessions={"s2"})
+
+        daily = {r["day"]: r for r in daily_token_breakdown(self.db)}
+        self.assertEqual(daily["2026-04-10"]["input_tokens"], 100)
+        self.assertEqual(daily["2026-04-11"]["input_tokens"], 25)
+        self.assertNotIn("2026-04-12", daily)
+
+        sessions = {r["session_id"]: r for r in recent_sessions(self.db, limit=10)}
+        self.assertEqual(sessions["s2"]["tokens"], 61)
+        self.assertNotIn("s3", sessions)
+
+
 class SkillBreakdownTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -143,7 +241,7 @@ class ProjectNameTests(unittest.TestCase):
 
     def test_basename_of_windows_cwd(self):
         self.assertEqual(
-            project_name_for(r"C:\Users\nateh\OneDrive\Desktop\Token Dashboard", "anything"),
+            project_name_for(r"C:\Users\alice\projects\Token Dashboard", "anything"),
             "Token Dashboard",
         )
 
@@ -166,17 +264,17 @@ class ProjectNameTests(unittest.TestCase):
         # cwd is a subfolder; slug matches the parent → return the parent's basename
         self.assertEqual(
             project_name_for(
-                r"C:\Users\nateh\OneDrive\Desktop\Herk-2\claude-usage",
-                "C--Users-nateh-OneDrive-Desktop-Herk-2",
+                r"C:\Users\alice\projects\MyProject\subdir",
+                "C--Users-alice-projects-MyProject",
             ),
-            "Herk-2",
+            "MyProject",
         )
 
     def test_walks_up_preserves_spaces(self):
         self.assertEqual(
             project_name_for(
-                r"C:\Users\nateh\OneDrive\Desktop\Token Dashboard\src\subdir",
-                "C--Users-nateh-OneDrive-Desktop-Token-Dashboard",
+                r"C:\Users\alice\projects\Token Dashboard\src\subdir",
+                "C--Users-alice-projects-Token-Dashboard",
             ),
             "Token Dashboard",
         )

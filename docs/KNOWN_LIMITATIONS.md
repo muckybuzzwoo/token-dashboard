@@ -20,10 +20,6 @@ If you use Claude's Cowork mode (server-side sessions, not local `claude` CLI), 
 
 If a transcript references a model ID not in `pricing.json` (e.g. a future snapshot that isn't in our table yet), cost is estimated from the tier substring (`opus` / `sonnet` / `haiku`) in the name. The UI marks these as `estimated: true`. If the model name contains none of those substrings, cost is reported as null.
 
-## README repo URL is a placeholder
-
-`README.md` currently shows `git clone https://github.com/<your-handle>/token-dashboard.git`. This is a placeholder until the repo is published — it's intentional, so the spec's out-of-scope list doesn't leak into docs. Once published, swap `<your-handle>` for the real GitHub handle.
-
 ## First scan can be slow
 
 The first `python3 cli.py scan` on a heavy user's machine can read tens of MB across hundreds of JSONLs. Subsequent scans are incremental (mtime + byte-offset tracking in the `files` table), so they're fast.

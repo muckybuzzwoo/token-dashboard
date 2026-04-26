@@ -1,4 +1,4 @@
-import { api, fmt } from '/web/app.js';
+import { api, fmt, makeSortable, cacheGet, cacheSet } from '/web/app.js';
 import { barChart } from '/web/charts.js';
 
 const RANGES = [
@@ -25,14 +25,25 @@ function sinceIso(range) {
   return new Date(Date.now() - range.days * 86400 * 1000).toISOString();
 }
 
+function buildUrl(range) {
+  const since = sinceIso(range);
+  return '/api/skills' + (since ? '?since=' + encodeURIComponent(since) : '');
+}
+
 export default async function (root) {
   const range = readRange();
-  const since = sinceIso(range);
-  const url = '/api/skills' + (since ? '?since=' + encodeURIComponent(since) : '');
-  const skills = await api(url);
+  const url   = buildUrl(range);
 
+  const cached = cacheGet(url);
+  if (cached) { renderSkills(root, cached, range); return; }
+
+  const fresh = await api(url);
+  cacheSet(url, fresh);
+  renderSkills(root, fresh, range);
+}
+
+function renderSkills(root, skills, range) {
   const totalInvocations = skills.reduce((s, r) => s + r.invocations, 0);
-  const totalSessions = new Set(); // not exact — we'd need another query; skip.
 
   const rangeTabs = `
     <div class="range-tabs" role="tablist">
@@ -60,7 +71,7 @@ export default async function (root) {
     <div class="card" style="margin-top:16px">
       <h3>All skills</h3>
       <p class="muted" style="margin:-4px 0 14px;font-size:12px">"Tokens per call" is the size of the skill's <code>SKILL.md</code> file — what Claude Code loads into context each time the skill is invoked.</p>
-      <table>
+      <table id="skills-table">
         <thead><tr>
           <th>skill</th>
           <th class="num">invocations</th>
@@ -71,11 +82,11 @@ export default async function (root) {
         <tbody>
           ${skills.map(s => `
             <tr>
-              <td><span class="badge">${fmt.htmlSafe(s.skill)}</span></td>
-              <td class="num">${fmt.int(s.invocations)}</td>
-              <td class="num">${s.tokens_per_call == null ? '<span class="muted">—</span>' : fmt.int(s.tokens_per_call)}</td>
-              <td class="num">${fmt.int(s.sessions)}</td>
-              <td class="mono">${fmt.ts(s.last_used)}</td>
+              <td data-val="${fmt.htmlSafe(s.skill)}"><span class="badge">${fmt.htmlSafe(s.skill)}</span></td>
+              <td class="num" data-val="${s.invocations || 0}">${fmt.int(s.invocations)}</td>
+              <td class="num" data-val="${s.tokens_per_call ?? ''}">${s.tokens_per_call == null ? '<span class="muted">—</span>' : fmt.int(s.tokens_per_call)}</td>
+              <td class="num" data-val="${s.sessions || 0}">${fmt.int(s.sessions)}</td>
+              <td class="mono" data-val="${s.last_used || ''}">${fmt.ts(s.last_used)}</td>
             </tr>`).join('') || '<tr><td colspan="5" class="muted">no skills invoked in this range</td></tr>'}
         </tbody>
       </table>
@@ -85,6 +96,9 @@ export default async function (root) {
   root.querySelectorAll('.range-tabs button').forEach(btn => {
     btn.addEventListener('click', () => writeRange(btn.dataset.range));
   });
+
+  const skillsTable = root.querySelector('#skills-table');
+  if (skillsTable) makeSortable(skillsTable, { col: 1, dir: 'desc' });
 
   const top = skills.slice(0, 12);
   barChart(document.getElementById('ch-skills'), {

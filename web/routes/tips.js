@@ -1,7 +1,17 @@
-import { api, fmt } from '/web/app.js';
+import { api, fmt, cacheGet, cacheSet, cacheClear } from '/web/app.js';
+
+const URL = '/api/tips';
 
 export default async function (root) {
-  const tips = await api('/api/tips');
+  const cached = cacheGet(URL);
+  if (cached) { renderTips(root, cached); return; }
+
+  const fresh = await api(URL);
+  cacheSet(URL, fresh);
+  renderTips(root, fresh);
+}
+
+function renderTips(root, tips) {
   root.innerHTML = `
     <div class="card">
       <h2>Suggestions</h2>
@@ -19,6 +29,7 @@ export default async function (root) {
           <p class="tip-body">${fmt.htmlSafe(t.body)}</p>
         </div>`).join('')}
     </div>`;
+
   root.querySelectorAll('button[data-key]').forEach(b => {
     b.addEventListener('click', async () => {
       await fetch('/api/tips/dismiss', {
@@ -26,6 +37,7 @@ export default async function (root) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: b.dataset.key }),
       });
+      cacheClear(); // server also clears its cache on dismiss
       location.reload();
     });
   });

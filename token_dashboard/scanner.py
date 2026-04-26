@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-from .db import connect
+from .db import connect, rebuild_summaries, summaries_ready
 
 
 INSERT_MSG = """
@@ -185,34 +185,67 @@ def _evict_prior_snapshots(conn, session_id: str, message_id: str, keep_uuid: st
 
 
 def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
+    """Ingest new lines from a JSONL file starting at ``start_byte``.
+
+    Returns message/tool counts plus ``end_offset`` — the byte offset just
+    past the last fully-parsed line. Callers persist ``end_offset`` as the
+    file's high-water mark so a line partially flushed at EOF gets re-read
+    once it completes.
+    """
     msgs = tools = 0
+    days = set()
+    sessions = set()
+    end_offset = start_byte
     with open(path, "rb") as fb:
         if start_byte:
             fb.seek(start_byte)
-        for raw in fb:
+        while True:
+            raw = fb.readline()
+            if not raw:
+                break  # EOF
+            if not raw.endswith(b"\n"):
+                # Partial line — Claude Code is mid-flush. Leave the
+                # high-water mark behind the line start so we re-read it
+                # once the write completes.
+                break
+            line_end = fb.tell()
             try:
                 line = raw.decode("utf-8", errors="replace").strip()
             except Exception:
+                end_offset = line_end
                 continue
             if not line:
+                end_offset = line_end
                 continue
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                end_offset = line_end
                 continue
             if not isinstance(rec, dict) or "uuid" not in rec or "type" not in rec:
+                end_offset = line_end
                 continue
             msg, tlist = parse_record(rec, project_slug)
             if not msg["session_id"] or not msg["timestamp"]:
+                end_offset = line_end
                 continue
             if msg["message_id"]:
                 _evict_prior_snapshots(conn, msg["session_id"], msg["message_id"], msg["uuid"])
             conn.execute(INSERT_MSG, msg)
+            if msg["timestamp"]:
+                days.add(msg["timestamp"][:10])
+            if msg["session_id"]:
+                sessions.add(msg["session_id"])
+            # tool_calls has no natural unique key; clear any prior rows for
+            # this uuid so full rescans stay idempotent instead of
+            # duplicating rows.
+            conn.execute("DELETE FROM tool_calls WHERE message_uuid=?", (msg["uuid"],))
             for t in tlist:
                 conn.execute(INSERT_TOOL, t)
                 tools += 1
             msgs += 1
-    return {"messages": msgs, "tools": tools}
+            end_offset = line_end
+    return {"messages": msgs, "tools": tools, "end_offset": end_offset, "days": days, "sessions": sessions}
 
 
 def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
@@ -220,28 +253,78 @@ def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict
     totals = {"messages": 0, "tools": 0, "files": 0}
     if not root.is_dir():
         return totals
+    # Commit every BATCH_SIZE files so the SQLite journal never grows large
+    # enough to spike RAM. Smaller batches also release the write lock more
+    # frequently so concurrent HTTP writes (e.g. POST /api/plan) can proceed.
+    BATCH_SIZE = 20
+    pending = 0
+    needs_full_summary_rebuild = not summaries_ready(db_path)
+    summary_days = set()
+    summary_sessions = set()
+    scan_started = time.perf_counter()
     with connect(db_path) as conn:
+        known_files = {
+            r["path"]: r for r in conn.execute("SELECT path, mtime, bytes_read FROM files")
+        }
         for p in root.rglob("*.jsonl"):
             try:
                 stat = p.stat()
             except OSError:
                 continue
-            row = conn.execute(
-                "SELECT mtime, bytes_read FROM files WHERE path=?", (str(p),)
-            ).fetchone()
+            path_s = str(p)
+            row = known_files.get(path_s)
             offset = 0
-            if row and row["mtime"] == stat.st_mtime and row["bytes_read"] == stat.st_size:
+            if row and row["bytes_read"] == stat.st_size:
+                if row["mtime"] != stat.st_mtime:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
+                        (path_s, stat.st_mtime, row["bytes_read"], time.time()),
+                    )
+                    pending += 1
+                    if pending >= BATCH_SIZE:
+                        conn.commit()
+                        pending = 0
+                        time.sleep(0.05)  # yield so concurrent HTTP writes can acquire the lock
                 continue
             if row and stat.st_size > row["bytes_read"]:
                 offset = row["bytes_read"]
             slug = _project_slug(p, root)
             sub = scan_file(p, slug, conn, start_byte=offset)
+            # Persist the byte offset of the last fully-parsed line (not
+            # st_size) so a partial line mid-flush is retried on the next
+            # scan instead of being skipped over.
             conn.execute(
                 "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
-                (str(p), stat.st_mtime, stat.st_size, time.time()),
+                (path_s, stat.st_mtime, sub["end_offset"], time.time()),
             )
             totals["messages"] += sub["messages"]
             totals["tools"]    += sub["tools"]
             totals["files"]    += 1
+            if sub["messages"] or sub["tools"]:
+                summary_days.update(sub["days"])
+                summary_sessions.update(sub["sessions"])
+            pending += 1
+            if pending >= BATCH_SIZE:
+                conn.commit()
+                pending = 0
+                time.sleep(0.05)  # yield so concurrent HTTP writes can acquire the lock
         conn.commit()
+    summary_started = time.perf_counter()
+    if needs_full_summary_rebuild:
+        rebuild_summaries(db_path)
+    elif summary_days or summary_sessions:
+        rebuild_summaries(db_path, days=summary_days, sessions=summary_sessions)
+    totals["scan_seconds"] = round(summary_started - scan_started, 3)
+    totals["summary_seconds"] = round(time.perf_counter() - summary_started, 3)
+    totals["summary_days"] = len(summary_days)
+    totals["summary_sessions"] = len(summary_sessions)
+    if totals["scan_seconds"] > 1 or totals["summary_seconds"] > 1:
+        print(
+            "token-dashboard scan "
+            f"scan={totals['scan_seconds']:.3f}s summary={totals['summary_seconds']:.3f}s "
+            f"messages={totals['messages']} tools={totals['tools']} files={totals['files']} "
+            f"days={totals['summary_days']} sessions={totals['summary_sessions']} "
+            f"full_summary={int(needs_full_summary_rebuild)}",
+            flush=True,
+        )
     return totals

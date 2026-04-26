@@ -5,9 +5,11 @@ import socket
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 
+import token_dashboard.server as server
 from token_dashboard.db import init_db
 from token_dashboard.server import build_handler
 
@@ -74,6 +76,54 @@ class ServerTests(unittest.TestCase):
         with urllib.request.urlopen(req) as resp:
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.read(), b"")
+
+    def test_rtk_json_reports_when_cli_is_missing(self):
+        body = server._rtk_payload(home=os.path.join(self.tmp, "no-rtk-home"))
+        self.assertFalse(body["available"])
+        self.assertIn("install_url", body)
+        self.assertIsNone(body["summary"])
+
+
+class RefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "refresh.db")
+        init_db(self.db)
+        self.orig_scan_dir = server.scan_dir
+        self.orig_warm_bundle = server._warm_bundle
+
+    def tearDown(self):
+        server.scan_dir = self.orig_scan_dir
+        server._warm_bundle = self.orig_warm_bundle
+
+    def test_refresh_does_not_eagerly_warm_overview_bundles(self):
+        calls = {"warm": 0}
+        server.scan_dir = lambda projects_dir, db_path: {"messages": 0, "tools": 0, "files": 0}
+        server._warm_bundle = lambda db_path, pricing: calls.__setitem__("warm", calls["warm"] + 1)
+
+        server._do_refresh(self.db, "/nonexistent", {"models": {}, "plans": {}})
+
+        self.assertEqual(calls["warm"], 0)
+
+    def test_overlapping_refreshes_are_coalesced(self):
+        calls = {"scan": 0}
+
+        def slow_scan(projects_dir, db_path):
+            calls["scan"] += 1
+            time.sleep(0.05)
+            return {"messages": 0, "tools": 0, "files": 0}
+
+        server.scan_dir = slow_scan
+        server._warm_bundle = lambda db_path, pricing: None
+
+        t1 = threading.Thread(target=server._do_refresh, args=(self.db, "/nonexistent", {"models": {}, "plans": {}}))
+        t2 = threading.Thread(target=server._do_refresh, args=(self.db, "/nonexistent", {"models": {}, "plans": {}}))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual(calls["scan"], 1)
 
 
 if __name__ == "__main__":
