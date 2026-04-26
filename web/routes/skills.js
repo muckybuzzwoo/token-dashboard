@@ -59,7 +59,7 @@ export default async function (root) {
 
     <div class="card" style="margin-top:16px">
       <h3>All skills</h3>
-      <p class="muted" style="margin:-4px 0 14px;font-size:12px">"Tokens per call" is the size of the skill's <code>SKILL.md</code> file — what Claude Code loads into context each time. "Budget" / "p50 out" / "p95 out" track the skill's <strong>output</strong> footprint: budget is parsed from the <code>SKILL.md</code> body; p50/p95 are the historical distribution per invocation. Red means p50 exceeds budget by more than 20%.</p>
+      <p class="muted" style="margin:-4px 0 14px;font-size:12px">"Tokens per call" is the size of the skill's <code>SKILL.md</code> file — what Claude Code loads into context each time. "Budget" / "p50 out" / "p95 out" track the skill's <strong>output</strong> footprint: budget is parsed from the <code>SKILL.md</code> body; p50/p95 sum <code>output_tokens</code> from the Skill call until the user types again or another Skill runs, excluding sidechain subagents. Note that <code>output_tokens</code> includes tool_use JSON, so a 2-5× gap over a text-only budget can be tool-call overhead. Red means p50 exceeds budget by more than 20%.</p>
       <table>
         <thead><tr>
           <th>skill</th>

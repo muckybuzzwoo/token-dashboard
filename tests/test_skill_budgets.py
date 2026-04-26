@@ -144,6 +144,68 @@ class SkillActualsTests(unittest.TestCase):
         self.assertEqual(actuals["isolated"]["p50"], 0)
         self.assertEqual(actuals["isolated"]["count"], 1)
 
+    def test_skill_actuals_excludes_sidechain(self):
+        """Assistant output with is_sidechain=1 (subagents, auto-compaction) must not count."""
+        with connect(self.db) as c:
+            _seed_skill_call(c, uuid="a1", session="s1",
+                             target="leaky", ts="2026-04-10T00:00:00Z")
+            # One main-chain message + one huge sidechain message in the window.
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, output_tokens, is_sidechain) "
+                "VALUES ('m1', 's1', 'p', 'assistant', '2026-04-10T00:00:01Z', 100, 0)"
+            )
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, output_tokens, is_sidechain) "
+                "VALUES ('m2', 's1', 'p', 'assistant', '2026-04-10T00:00:02Z', 9999, 1)"
+            )
+            c.commit()
+        actuals = skill_actuals(self.db)
+        self.assertEqual(actuals["leaky"]["p50"], 100)
+
+    def test_skill_actuals_real_user_message_terminates_window(self):
+        """A real-user-typed message (prompt_chars>0, no meta prefix) ends the window."""
+        with connect(self.db) as c:
+            _seed_skill_call(c, uuid="a1", session="s1",
+                             target="chatty", ts="2026-04-10T00:00:00Z")
+            # Assistant emits 100 tokens, user types something, assistant emits more.
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, output_tokens) "
+                "VALUES ('m1', 's1', 'p', 'assistant', '2026-04-10T00:00:01Z', 100)"
+            )
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, prompt_text, prompt_chars) "
+                "VALUES ('u1', 's1', 'p', 'user', '2026-04-10T00:00:02Z', 'change of plans, do X instead', 30)"
+            )
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, output_tokens) "
+                "VALUES ('m2', 's1', 'p', 'assistant', '2026-04-10T00:00:03Z', 5000)"
+            )
+            c.commit()
+        actuals = skill_actuals(self.db)
+        # Only m1 should count; m2 is past the real-user boundary.
+        self.assertEqual(actuals["chatty"]["p50"], 100)
+
+    def test_skill_actuals_meta_user_messages_do_not_terminate(self):
+        """System-injected user messages (SKILL.md body, <system-reminder>, etc.) are not boundaries."""
+        with connect(self.db) as c:
+            _seed_skill_call(c, uuid="a1", session="s1",
+                             target="loaded", ts="2026-04-10T00:00:00Z")
+            # Immediately after the Skill call, Claude Code injects the SKILL.md body
+            # as a user-role message. This must NOT terminate attribution.
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, prompt_text, prompt_chars) "
+                "VALUES ('u-inject', 's1', 'p', 'user', '2026-04-10T00:00:00.500Z', ?, 5000)",
+                ("Base directory for this skill: /home/x/.claude/skills/loaded\n\n# body...",),
+            )
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, output_tokens) "
+                "VALUES ('m1', 's1', 'p', 'assistant', '2026-04-10T00:00:01Z', 400)"
+            )
+            c.commit()
+        actuals = skill_actuals(self.db)
+        # Injected skill-load user message is filtered out, so m1 is counted.
+        self.assertEqual(actuals["loaded"]["p50"], 400)
+
     def test_skill_actuals_respects_since(self):
         """Skill calls before `since` are filtered out."""
         with connect(self.db) as c:

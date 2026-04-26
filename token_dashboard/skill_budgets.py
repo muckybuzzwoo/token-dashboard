@@ -97,20 +97,48 @@ def _percentile(sorted_xs: list[int], p: int) -> int:
     return int(sorted_xs[lo] * (hi - k) + sorted_xs[hi] * (k - lo))
 
 
+# User-role messages that are system-injected (not real typing) and must not
+# terminate the attribution window. Skill/agent invocations inject the body
+# of SKILL.md/AGENT.md as a 20k+ user-role message; other Claude Code
+# machinery injects the bracketed tags below. Empirically this covers ~25%
+# of non-empty user messages; the other ~75% are the user actually typing.
+_META_USER_PREFIXES = (
+    "Base directory for this skill:",
+    "Base directory for this agent:",
+    "<system-reminder>",
+    "<command-name>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "[Request interrupted",
+)
+
+
 def skill_actuals(db_path, since=None, until=None) -> dict[str, dict]:
     """Return ``{slug: {p50, p95, count}}`` of output_tokens per invocation.
 
-    Window = assistant-message output_tokens strictly after a Skill tool_call
-    and strictly before the next Skill call in the same session (or session
-    end if this is the last). LEFT JOIN so skills with zero subsequent output
-    still contribute a 0 sample.
+    Window boundaries, in priority order:
+      1. next Skill call in the same session,
+      2. next real-user-typed main-chain message (``prompt_chars > 0`` and
+         ``prompt_text`` does NOT start with any system-injection prefix),
+      3. end of session.
+
+    Sidechain assistant output (subagents, auto-compaction) is excluded —
+    it is not emitted by the skill itself and would otherwise leak in when
+    an auto-compact agent fires during the window.
+
+    Note on what ``output_tokens`` counts: the Anthropic API ``output_tokens``
+    field includes tool_use JSON blocks and thinking blocks, not just
+    user-visible text. Skills that declare "Complete in <N output tokens"
+    usually mean text-only output, so a 2-5× gap between declared budget
+    and measured p50 can reflect tool_use overhead rather than a bloated
+    skill.
     """
     rng, args = _range_clause(since, until)
-    # The CTE's `rng` filters which Skill calls enter the window set. The
-    # outer JOIN's `rng` would filter the measured assistant messages — we
-    # deliberately do NOT filter those: if a Skill call lands inside the
-    # window, its full post-invocation output should be counted, even if
-    # some of those messages fall outside the range.
+    # Build "m.prompt_text NOT LIKE ?" chain for the meta-prefix filter.
+    not_like = " AND ".join(
+        ["u.prompt_text NOT LIKE ?"] * len(_META_USER_PREFIXES)
+    )
+    like_args = [p + "%" for p in _META_USER_PREFIXES]
     sql = f"""
       WITH calls AS (
         SELECT session_id,
@@ -118,23 +146,40 @@ def skill_actuals(db_path, since=None, until=None) -> dict[str, dict]:
                timestamp  AS start_ts,
                LEAD(timestamp) OVER (
                  PARTITION BY session_id ORDER BY timestamp
-               ) AS end_ts
+               ) AS next_skill_ts
           FROM tool_calls
          WHERE tool_name = 'Skill'
            AND target IS NOT NULL
            AND target != ''
            {rng}
+      ),
+      bounds AS (
+        SELECT c.session_id, c.skill, c.start_ts, c.next_skill_ts,
+               (SELECT MIN(u.timestamp) FROM messages u
+                 WHERE u.session_id   = c.session_id
+                   AND u.type         = 'user'
+                   AND u.is_sidechain = 0
+                   AND u.prompt_chars IS NOT NULL
+                   AND u.prompt_chars > 0
+                   AND u.prompt_text  IS NOT NULL
+                   AND u.timestamp    > c.start_ts
+                   AND {not_like}
+               ) AS next_user_ts
+          FROM calls c
       )
-      SELECT c.skill,
+      SELECT b.skill,
              COALESCE(SUM(m.output_tokens), 0) AS output_tokens
-        FROM calls c
+        FROM bounds b
         LEFT JOIN messages m
-          ON m.session_id = c.session_id
-         AND m.type       = 'assistant'
-         AND m.timestamp  > c.start_ts
-         AND (c.end_ts IS NULL OR m.timestamp < c.end_ts)
-       GROUP BY c.skill, c.session_id, c.start_ts
+          ON m.session_id   = b.session_id
+         AND m.type         = 'assistant'
+         AND m.is_sidechain = 0
+         AND m.timestamp    > b.start_ts
+         AND (b.next_skill_ts IS NULL OR m.timestamp < b.next_skill_ts)
+         AND (b.next_user_ts  IS NULL OR m.timestamp < b.next_user_ts)
+       GROUP BY b.skill, b.session_id, b.start_ts
     """
+    args = [*args, *like_args]
     samples: dict[str, list[int]] = {}
     with connect(db_path) as conn:
         for row in conn.execute(sql, args):
