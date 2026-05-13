@@ -1,4 +1,5 @@
 import { api, fmt } from '/web/app.js';
+import { toCSV, toMarkdown, copyToClipboard, downloadBlob } from '/web/export.js';
 
 const SORTS = [
   { key: 'tokens', label: 'Most tokens' },
@@ -35,6 +36,8 @@ export default async function (root) {
       <h2 style="margin:0;font-size:16px;letter-spacing:-0.01em">Prompts</h2>
       <div class="spacer"></div>
       ${sortTabs}
+      <button id="export-md" type="button" title="Copy this view to the clipboard as Markdown">Copy MD</button>
+      <button id="export-csv" type="button" title="Download this view as CSV">Download CSV</button>
     </div>
 
     <div class="card">
@@ -66,6 +69,35 @@ export default async function (root) {
 
   root.querySelectorAll('.range-tabs button').forEach(btn => {
     btn.addEventListener('click', () => writeSort(btn.dataset.sort));
+  });
+
+  const sections = [{
+    heading: `Prompts — ${sort.label.toLowerCase()}`,
+    columns: ['timestamp', 'prompt', 'model', 'billable_tokens', 'cache_read_tokens', 'estimated_cost_usd', 'session_id'],
+    rows: rows.map(r => [
+      r.timestamp,
+      r.prompt_text || '',
+      r.model || '',
+      r.billable_tokens,
+      r.cache_read_tokens,
+      r.estimated_cost_usd,
+      r.session_id,
+    ]),
+  }];
+
+  root.querySelector('#export-md').addEventListener('click', async () => {
+    const md = toMarkdown(`Prompts (${sort.label.toLowerCase()})`, sections);
+    const ok = await copyToClipboard(md);
+    const btn = root.querySelector('#export-md');
+    const original = btn.textContent;
+    btn.textContent = ok ? 'Copied!' : 'Copy failed';
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  });
+
+  root.querySelector('#export-csv').addEventListener('click', () => {
+    const csv = toCSV(sections);
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadBlob(`prompts-${sort.key}-${stamp}.csv`, 'text/csv', csv);
   });
 
   root.querySelectorAll('#prompts tbody tr').forEach(tr => {
