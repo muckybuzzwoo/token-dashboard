@@ -132,7 +132,11 @@ class RescanIdempotencyTests(unittest.TestCase):
         future = time.time() + 10
         os.utime(self._jsonl_path(), (future, future))
 
-        scan_dir(self.proj_root, self.db)
+        n2 = scan_dir(self.proj_root, self.db)
+        self.assertEqual(
+            n2["messages"], 0,
+            "mtime-only changes with the same byte size should not reparse the file",
+        )
         self.assertEqual(
             self._count_tools(), 1,
             "rescan must not duplicate tool_calls — INSERT needs to clear per-message first",

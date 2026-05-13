@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from token_dashboard.db import init_db
-from token_dashboard.server import build_handler
+from token_dashboard.server import build_handler, _cache_clear
 from token_dashboard import skills, skill_budgets
 
 
@@ -63,6 +63,7 @@ class ServerSkillBudgetTests(unittest.TestCase):
         skills._cache["data"] = {}
         skills._cache["key"] = None
         skill_budgets._budget_cache.clear()
+        _cache_clear()
 
         self.port = _free_port()
         H = build_handler(self.db, projects_dir="/nonexistent")
@@ -75,6 +76,7 @@ class ServerSkillBudgetTests(unittest.TestCase):
         skills._cache["data"] = {}
         skills._cache["key"] = None
         skill_budgets._budget_cache.clear()
+        _cache_clear()
 
     def _get(self, path):
         return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}").read()
@@ -153,6 +155,7 @@ class ServerSkillSubagentTests(unittest.TestCase):
         skills._cache["data"] = {}
         skills._cache["key"] = None
         skill_budgets._budget_cache.clear()
+        _cache_clear()
 
     def _get(self, path):
         return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}").read()

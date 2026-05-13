@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
-from .db import connect
+from .db import connect, rebuild_summaries, summaries_ready
 
 
 # Slash-command user messages (typed as `/foo` in Claude Code) arrive as a
@@ -240,6 +240,8 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
     once it completes.
     """
     msgs = tools = 0
+    days = set()
+    sessions = set()
     end_offset = start_byte
     with open(path, "rb") as fb:
         if start_byte:
@@ -277,6 +279,10 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
             if msg["message_id"]:
                 _evict_prior_snapshots(conn, msg["session_id"], msg["message_id"], msg["uuid"])
             conn.execute(INSERT_MSG, msg)
+            if msg["timestamp"]:
+                days.add(msg["timestamp"][:10])
+            if msg["session_id"]:
+                sessions.add(msg["session_id"])
             # tool_calls has no natural unique key; clear any prior rows for
             # this uuid so full rescans stay idempotent instead of
             # duplicating rows.
@@ -286,7 +292,7 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
                 tools += 1
             msgs += 1
             end_offset = line_end
-    return {"messages": msgs, "tools": tools, "end_offset": end_offset}
+    return {"messages": msgs, "tools": tools, "end_offset": end_offset, "days": days, "sessions": sessions}
 
 
 def rescan_agent_targets(
@@ -342,9 +348,21 @@ def scan_dir(
     totals = {"messages": 0, "tools": 0, "files": 0}
     if not root.is_dir():
         return totals
+    # Commit every BATCH_SIZE files so the SQLite journal never grows large
+    # enough to spike RAM. Smaller batches also release the write lock more
+    # frequently so concurrent HTTP writes (e.g. POST /api/plan) can proceed.
+    BATCH_SIZE = 20
+    pending = 0
+    needs_full_summary_rebuild = not summaries_ready(db_path)
+    summary_days = set()
+    summary_sessions = set()
+    scan_started = time.perf_counter()
     paths = list(root.rglob("*.jsonl"))
     total = len(paths)
     with connect(db_path) as conn:
+        known_files = {
+            r["path"]: r for r in conn.execute("SELECT path, mtime, bytes_read FROM files")
+        }
         for i, p in enumerate(paths, start=1):
             try:
                 stat = p.stat()
@@ -352,11 +370,20 @@ def scan_dir(
                 if progress:
                     progress(i, total, p, totals)
                 continue
-            row = conn.execute(
-                "SELECT mtime, bytes_read FROM files WHERE path=?", (str(p),)
-            ).fetchone()
+            path_s = str(p)
+            row = known_files.get(path_s)
             offset = 0
-            if row and row["mtime"] == stat.st_mtime and row["bytes_read"] == stat.st_size:
+            if row and row["bytes_read"] == stat.st_size:
+                if row["mtime"] != stat.st_mtime:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
+                        (path_s, stat.st_mtime, row["bytes_read"], time.time()),
+                    )
+                    pending += 1
+                    if pending >= BATCH_SIZE:
+                        conn.commit()
+                        pending = 0
+                        time.sleep(0.05)  # yield so concurrent HTTP writes can acquire the lock
                 if progress:
                     progress(i, total, p, totals)
                 continue
@@ -369,14 +396,40 @@ def scan_dir(
             # scan instead of being skipped over.
             conn.execute(
                 "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
-                (str(p), stat.st_mtime, sub["end_offset"], time.time()),
+                (path_s, stat.st_mtime, sub["end_offset"], time.time()),
             )
             totals["messages"] += sub["messages"]
             totals["tools"]    += sub["tools"]
             totals["files"]    += 1
+            if sub["messages"] or sub["tools"]:
+                summary_days.update(sub["days"])
+                summary_sessions.update(sub["sessions"])
+            pending += 1
+            if pending >= BATCH_SIZE:
+                conn.commit()
+                pending = 0
+                time.sleep(0.05)  # yield so concurrent HTTP writes can acquire the lock
             if progress:
                 progress(i, total, p, totals)
         conn.commit()
+    summary_started = time.perf_counter()
+    if needs_full_summary_rebuild:
+        rebuild_summaries(db_path)
+    elif summary_days or summary_sessions:
+        rebuild_summaries(db_path, days=summary_days, sessions=summary_sessions)
+    totals["scan_seconds"] = round(summary_started - scan_started, 3)
+    totals["summary_seconds"] = round(time.perf_counter() - summary_started, 3)
+    totals["summary_days"] = len(summary_days)
+    totals["summary_sessions"] = len(summary_sessions)
+    if totals["scan_seconds"] > 1 or totals["summary_seconds"] > 1:
+        print(
+            "token-dashboard scan "
+            f"scan={totals['scan_seconds']:.3f}s summary={totals['summary_seconds']:.3f}s "
+            f"messages={totals['messages']} tools={totals['tools']} files={totals['files']} "
+            f"days={totals['summary_days']} sessions={totals['summary_sessions']} "
+            f"full_summary={int(needs_full_summary_rebuild)}",
+            flush=True,
+        )
     return totals
 
 

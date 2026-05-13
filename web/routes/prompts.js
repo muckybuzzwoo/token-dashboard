@@ -1,4 +1,4 @@
-import { api, fmt } from '/web/app.js';
+import { api, fmt, cacheGet, cacheSet } from '/web/app.js';
 import { toCSV, toMarkdown, copyToClipboard, downloadBlob } from '/web/export.js';
 
 const SORTS = [
@@ -20,8 +20,17 @@ function writeSort(key) {
 
 export default async function (root) {
   const sort = readSort();
-  const rows = await api('/api/prompts?limit=100&sort=' + encodeURIComponent(sort.key));
+  const url  = '/api/prompts?limit=100&sort=' + encodeURIComponent(sort.key);
 
+  const cached = cacheGet(url);
+  if (cached) { renderPrompts(root, cached, sort); return; }
+
+  const fresh = await api(url);
+  cacheSet(url, fresh);
+  renderPrompts(root, fresh, sort);
+}
+
+function renderPrompts(root, rows, sort) {
   const sortTabs = `
     <div class="range-tabs" role="tablist">
       ${SORTS.map(s => `<button data-sort="${s.key}" class="${s.key === sort.key ? 'active' : ''}">${s.label}</button>`).join('')}
