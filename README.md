@@ -1,4 +1,6 @@
-# Token Dashboard
+# Token Dashboard (mucky fork)
+
+> **Fork notice.** This is a personal fork of [nateherkai/token-dashboard](https://github.com/nateherkai/token-dashboard) with several community pull requests integrated because upstream is currently inactive. See [FORK_NOTES.md](FORK_NOTES.md) for the full list of integrated changes and what differs from upstream.
 
 A local dashboard that reads the JSONL transcripts Claude Code writes to `~/.claude/projects/` and turns them into per-prompt cost analytics, tool/file heatmaps, subagent attribution, cache analytics, project comparisons, and a rule-based tips engine.
 
