@@ -8,3 +8,6 @@ node_modules/
 .superpowers/
 .claude/
 docs/superpowers/
+
+# Local launcher (per-user, not part of the public repo)
+start_dashboard.bat
