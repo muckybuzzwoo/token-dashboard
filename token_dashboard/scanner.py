@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from .db import connect
 
@@ -242,22 +242,37 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
     return {"messages": msgs, "tools": tools, "end_offset": end_offset}
 
 
-def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
+def scan_dir(
+    projects_root: Union[str, Path],
+    db_path: Union[str, Path],
+    progress: Optional[Callable[[int, int, Path, dict], None]] = None,
+) -> dict:
+    """Incrementally scan JSONL transcripts under ``projects_root`` into the DB.
+
+    ``progress`` is called as ``progress(index, total, path, totals)`` after
+    each file is processed (skipped or scanned). ``index`` is 1-based.
+    """
     root = Path(projects_root)
     totals = {"messages": 0, "tools": 0, "files": 0}
     if not root.is_dir():
         return totals
+    paths = list(root.rglob("*.jsonl"))
+    total = len(paths)
     with connect(db_path) as conn:
-        for p in root.rglob("*.jsonl"):
+        for i, p in enumerate(paths, start=1):
             try:
                 stat = p.stat()
             except OSError:
+                if progress:
+                    progress(i, total, p, totals)
                 continue
             row = conn.execute(
                 "SELECT mtime, bytes_read FROM files WHERE path=?", (str(p),)
             ).fetchone()
             offset = 0
             if row and row["mtime"] == stat.st_mtime and row["bytes_read"] == stat.st_size:
+                if progress:
+                    progress(i, total, p, totals)
                 continue
             if row and stat.st_size > row["bytes_read"]:
                 offset = row["bytes_read"]
@@ -273,5 +288,7 @@ def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict
             totals["messages"] += sub["messages"]
             totals["tools"]    += sub["tools"]
             totals["files"]    += 1
+            if progress:
+                progress(i, total, p, totals)
         conn.commit()
     return totals

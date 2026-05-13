@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +26,37 @@ def _projects(args) -> str:
     )
 
 
+def _progress_printer():
+    """Single-line stderr progress. Throttled to ~5 updates/sec so big scans
+    don't spam the terminal but still prove the process is alive."""
+    state = {"last": 0.0}
+    is_tty = sys.stderr.isatty()
+
+    def cb(i, total, path, totals):
+        now = time.monotonic()
+        final = (i == total)
+        if not final and (now - state["last"] < 0.2):
+            return
+        state["last"] = now
+        name = path.name
+        if len(name) > 48:
+            name = name[:45] + "..."
+        line = (
+            f"scanning {i}/{total}  "
+            f"files={totals['files']} msgs={totals['messages']} tools={totals['tools']}  "
+            f"{name}"
+        )
+        if is_tty:
+            sys.stderr.write("\r\x1b[2K" + line)
+            if final:
+                sys.stderr.write("\n")
+        else:
+            sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+
+    return cb
+
+
 def _today_range():
     now = datetime.now(timezone.utc)
     start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).isoformat()
@@ -34,7 +67,7 @@ def _today_range():
 def cmd_scan(args):
     db = _db_path(args)
     init_db(db)
-    n = scan_dir(_projects(args), db)
+    n = scan_dir(_projects(args), db, progress=_progress_printer())
     print(f"Token Dashboard: scanned {n['files']} files, {n['messages']} messages, {n['tools']} tool calls")
 
 
@@ -74,7 +107,7 @@ def cmd_dashboard(args):
     db = _db_path(args)
     init_db(db)
     if not args.no_scan:
-        scan_dir(_projects(args), db)
+        scan_dir(_projects(args), db, progress=_progress_printer())
     from token_dashboard.server import run
 
     host = os.environ.get("HOST", "127.0.0.1")
