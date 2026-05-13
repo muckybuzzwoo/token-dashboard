@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS plan (
   v TEXT
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  k TEXT PRIMARY KEY,
+  v TEXT
+);
+
 CREATE TABLE IF NOT EXISTS dismissed_tips (
   tip_key       TEXT PRIMARY KEY,
   dismissed_at  REAL NOT NULL
@@ -79,6 +84,10 @@ CREATE TABLE IF NOT EXISTS dismissed_tips (
 
 def default_db_path() -> Path:
     return Path.home() / ".claude" / "token-dashboard.db"
+
+
+def default_claude_dir() -> Path:
+    return Path.home() / ".claude"
 
 
 def init_db(path: Union[str, Path]) -> None:
@@ -121,6 +130,27 @@ def connect(path: Union[str, Path]):
         yield conn
     finally:
         conn.close()
+
+
+def get_setting(db_path: Union[str, Path], key: str, default: Optional[str] = None) -> Optional[str]:
+    with connect(db_path) as c:
+        row = c.execute("SELECT v FROM settings WHERE k=?", (key,)).fetchone()
+    return row["v"] if row else default
+
+
+def set_setting(db_path: Union[str, Path], key: str, value: str) -> None:
+    with connect(db_path) as c:
+        c.execute("INSERT OR REPLACE INTO settings (k, v) VALUES (?, ?)", (key, value))
+        c.commit()
+
+
+def clear_scan_data(db_path: Union[str, Path]) -> None:
+    """Clear cached transcript-derived rows without deleting user settings."""
+    with connect(db_path) as c:
+        c.execute("DELETE FROM tool_calls")
+        c.execute("DELETE FROM messages")
+        c.execute("DELETE FROM files")
+        c.commit()
 
 
 def _range_clause(since, until, col: str = "timestamp"):

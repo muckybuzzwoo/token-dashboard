@@ -8,9 +8,11 @@ import queue
 import threading
 import time
 from pathlib import Path
+from typing import Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 from .db import (
+    clear_scan_data, default_claude_dir, get_setting, set_setting,
     overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, skill_breakdown,
@@ -25,8 +27,10 @@ WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
 
 EVENTS: "queue.Queue[dict]" = queue.Queue()
+# Keep cache resets from interleaving with background or manual scans.
+SCAN_LOCK = threading.Lock()
 
-MAX_POST_BYTES = 1_000_000  # 1 MB — we only accept tiny JSON bodies (plan, tip key)
+MAX_POST_BYTES = 1_000_000  # 1 MB — we only accept tiny JSON bodies (settings, plan, tip key)
 MAX_LIMIT = 1000
 
 
@@ -68,7 +72,67 @@ def _serve_static(handler, rel: str) -> None:
     handler.wfile.write(body)
 
 
-def build_handler(db_path: str, projects_dir: str):
+def _claude_dir(db_path: str) -> Path:
+    saved = get_setting(db_path, "claude_dir")
+    return Path(saved).expanduser() if saved else default_claude_dir()
+
+
+def _claude_dirs(db_path: str) -> list[str]:
+    active = str(_claude_dir(db_path))
+    raw = get_setting(db_path, "claude_dirs")
+    dirs = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = []
+        if isinstance(parsed, list):
+            dirs = [str(p) for p in parsed if isinstance(p, str) and p]
+    out = []
+    for path in [active, *dirs]:
+        if path not in out:
+            out.append(path)
+    return out
+
+
+def _remember_claude_dir(db_path: str, claude_dir: Path) -> None:
+    path = str(claude_dir)
+    dirs = [path, *[p for p in _claude_dirs(db_path) if p != path]]
+    set_setting(db_path, "claude_dirs", json.dumps(dirs))
+
+
+def _projects_dir(db_path: str, projects_override: Optional[str] = None) -> Path:
+    if projects_override:
+        return Path(projects_override).expanduser()
+    return _claude_dir(db_path) / "projects"
+
+
+def _validate_claude_dir(raw) -> Tuple[Optional[Path], Optional[str]]:
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "claude_dir is required"
+    path = Path(raw.strip()).expanduser()
+    if not path.exists():
+        return None, f"{path} does not exist"
+    if not path.is_dir():
+        return None, f"{path} is not a directory"
+    projects = path / "projects"
+    if projects.exists() and not projects.is_dir():
+        return None, f"{projects} exists but is not a directory"
+    return path, None
+
+
+def _settings_payload(db_path: str, projects_override: Optional[str] = None) -> dict:
+    claude_dir = _claude_dir(db_path)
+    projects_dir = _projects_dir(db_path, projects_override)
+    return {
+        "claude_dir": str(claude_dir),
+        "projects_dir": str(projects_dir),
+        "projects_overridden": bool(projects_override),
+        "claude_dirs": _claude_dirs(db_path),
+    }
+
+
+def build_handler(db_path: str, projects_dir: Optional[str] = None):
     pricing = load_pricing(PRICING_JSON)
 
     class H(http.server.BaseHTTPRequestHandler):
@@ -173,8 +237,11 @@ def build_handler(db_path: str, projects_dir: str):
                 return _send_json(self, all_tips(db_path))
             if path == "/api/plan":
                 return _send_json(self, {"plan": get_plan(db_path), "pricing": pricing})
+            if path == "/api/settings":
+                return _send_json(self, _settings_payload(db_path, projects_dir))
             if path == "/api/scan":
-                n = scan_dir(projects_dir, db_path)
+                with SCAN_LOCK:
+                    n = scan_dir(_projects_dir(db_path, projects_dir), db_path)
                 return _send_json(self, n)
             if path == "/api/stream":
                 self.send_response(200)
@@ -213,6 +280,19 @@ def build_handler(db_path: str, projects_dir: str):
             if url.path == "/api/plan":
                 set_plan(db_path, body.get("plan", "api"))
                 return _send_json(self, {"ok": True})
+            if url.path == "/api/settings":
+                if "plan" in body:
+                    set_plan(db_path, body.get("plan", "api"))
+                if "claude_dir" in body:
+                    claude_dir, err = _validate_claude_dir(body.get("claude_dir"))
+                    if err:
+                        return _send_error(self, 400, err)
+                    with SCAN_LOCK:
+                        set_setting(db_path, "claude_dir", str(claude_dir))
+                        _remember_claude_dir(db_path, claude_dir)
+                        if body.get("reset_scan_data") is True:
+                            clear_scan_data(db_path)
+                return _send_json(self, {"ok": True, **_settings_payload(db_path, projects_dir)})
             if url.path == "/api/tips/dismiss":
                 dismiss_tip(db_path, body.get("key", ""))
                 return _send_json(self, {"ok": True})
@@ -222,10 +302,11 @@ def build_handler(db_path: str, projects_dir: str):
     return H
 
 
-def _scan_loop(db_path: str, projects_dir: str, interval: float = 30.0):
+def _scan_loop(db_path: str, projects_dir: Optional[str] = None, interval: float = 30.0):
     while True:
         try:
-            n = scan_dir(projects_dir, db_path)
+            with SCAN_LOCK:
+                n = scan_dir(_projects_dir(db_path, projects_dir), db_path)
             if n["messages"] > 0:
                 EVENTS.put({"type": "scan", "n": n, "ts": time.time()})
         except Exception as e:
@@ -233,7 +314,7 @@ def _scan_loop(db_path: str, projects_dir: str, interval: float = 30.0):
         time.sleep(interval)
 
 
-def run(host: str, port: int, db_path: str, projects_dir: str):
+def run(host: str, port: int, db_path: str, projects_dir: Optional[str] = None):
     threading.Thread(target=_scan_loop, args=(db_path, projects_dir), daemon=True).start()
     H = build_handler(db_path, projects_dir)
     httpd = http.server.ThreadingHTTPServer((host, port), H)

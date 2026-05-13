@@ -92,16 +92,30 @@ async function firstRun() {
         <div class="spacer"></div>
         <button class="primary" id="firstsave">Continue</button>
       </div>
+      <p id="firstmsg" class="muted" style="margin:8px 0 0"></p>
     </div>`;
   document.body.appendChild(overlay);
   await new Promise(res => $('#firstsave', overlay).addEventListener('click', async () => {
     const plan = $('#firstplan', overlay).value;
-    await fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) });
+    const msg = $('#firstmsg', overlay);
+    msg.textContent = 'Saving...';
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      msg.textContent = err.error || 'Could not save settings.';
+      msg.style.color = 'var(--bad)';
+      return;
+    }
     localStorage.setItem('td.plan-set', '1');
     overlay.remove();
     res();
   }));
   state.plan = (await api('/api/plan')).plan;
+  $('#plan-pill').textContent = state.plan;
 }
 
 async function boot() {

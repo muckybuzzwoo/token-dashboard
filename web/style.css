@@ -152,16 +152,53 @@ td.mono { font-family: var(--mono); color: var(--muted); }
 }
 
 /* buttons */
-button, select {
+button, select, input {
   background: var(--panel-2); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px;
   padding: 6px 12px; font-family: var(--sans); font-size: 13px;
+}
+button, select {
   cursor: pointer;
 }
-button:hover, select:hover { border-color: var(--border-2); }
+button:hover, select:hover, input:hover { border-color: var(--border-2); }
+input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+input:disabled { color: var(--muted); cursor: not-allowed; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 button.primary:hover { background: #5BA8FF; }
 button.ghost { background: transparent; color: var(--muted); }
+.combo-input {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+}
+.combo-input input {
+  min-width: 360px;
+  width: 520px;
+  max-width: 100%;
+}
+.combo-input.has-trigger input {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.combo-input .combo-trigger {
+  width: 34px;
+  padding: 6px 0;
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.combo-input:not(.has-trigger) .combo-trigger {
+  display: none;
+}
+@media (max-width: 720px) {
+  .combo-input {
+    flex: 1 1 100%;
+  }
+  .combo-input input {
+    min-width: 0;
+    width: 100%;
+  }
+}
 
 /* tip rows */
 .tip {
@@ -198,9 +235,13 @@ body.privacy-on .blur-sensitive { filter: blur(6px); }
 .modal h2 { margin: 0 0 8px; }
 .modal p { color: var(--muted); margin: 0 0 16px; }
 .modal .actions { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
+.field { display: grid; gap: 6px; margin-top: 12px; }
+.field span { color: var(--muted); font-size: 12px; }
+.field input { width: 100%; }
 
 /* utility */
 .muted { color: var(--muted); }
+.small { font-size: 12px; }
 .flex { display: flex; align-items: center; gap: 8px; }
 .spacer { flex: 1; }
 hr.divider { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }

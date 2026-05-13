@@ -58,6 +58,8 @@ To point at a different location:
 python3 cli.py dashboard --projects-dir /path/to/projects --db /path/to/cache.db
 ```
 
+You can also change the `.claude` folder from the Settings tab. Changing the folder controls future scans; it does not automatically partition old cached data in the current SQLite DB. When switching accounts or profiles, either enable **Clear cached transcript data** in Settings before saving, or launch with a separate `--db` path if you want to keep each folder's dashboard history isolated.
+
 ### Environment variables
 
 | Var | Default | Purpose |
@@ -105,7 +107,7 @@ The Overview tab also has a built-in "What do these numbers mean?" panel that ex
 
 **Port 8080 already in use.** `PORT=9000 python3 cli.py dashboard`.
 
-**Numbers look wrong / stuck.** The DB lives at `~/.claude/token-dashboard.db`. Delete it and re-run `python3 cli.py scan` to rebuild from scratch.
+**Numbers look wrong / stuck.** The DB lives at `~/.claude/token-dashboard.db`. Delete it and re-run `python3 cli.py scan` to rebuild from scratch. If you changed the `.claude` folder in Settings, use **Clear cached transcript data** when saving the new folder to avoid combining data from multiple transcript roots.
 
 **Running the dashboard twice at the same time.** Don't — both processes will fight over the SQLite DB. Stop all instances before starting a new one.
 

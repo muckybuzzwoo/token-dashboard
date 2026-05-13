@@ -14,7 +14,7 @@ class InitDbTests(unittest.TestCase):
         init_db(self.db_path)
         with sqlite3.connect(self.db_path) as c:
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        expected = {"files", "messages", "tool_calls", "plan", "dismissed_tips"}
+        expected = {"files", "messages", "tool_calls", "plan", "settings", "dismissed_tips"}
         self.assertTrue(expected.issubset(tables), f"Missing: {expected - tables}")
 
     def test_init_is_idempotent(self):
