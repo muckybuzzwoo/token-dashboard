@@ -513,7 +513,10 @@ def _scan_loop(db_path: str, projects_dir: Optional[str] = None, interval: float
                     n = scan_dir(_projects_dir(db_path, projects_dir), db_path)
                     if n["messages"] > 0:
                         _cache_clear()
-                        EVENTS.put({"type": "scan", "n": n, "ts": time.time()})
+                    # Emit the event even when messages == 0 so the frontend's
+                    # "Getting latest data…" banner clears once the scan finishes.
+                    # The frontend uses n.messages to decide whether to flag new data.
+                    EVENTS.put({"type": "scan", "n": n, "ts": time.time()})
                 finally:
                     SCAN_LOCK.release()
         except Exception as e:

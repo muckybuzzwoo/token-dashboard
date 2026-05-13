@@ -280,10 +280,15 @@ async function boot() {
       try {
         const evt = JSON.parse(ev.data);
         if (evt.type === 'scan') {
-          cacheClear();
           _nextScanAt = Date.now() + SCAN_INTERVAL;
-          _hasNewData = true;
-          setScanning(false); // clears spinner; updateRefreshBtn() shows "new data"
+          // Only flag new data + invalidate cache when the scan actually
+          // ingested something — otherwise this is just a no-op heartbeat
+          // confirming the scan finished, and we just clear the banner.
+          if (evt.n && evt.n.messages > 0) {
+            cacheClear();
+            _hasNewData = true;
+          }
+          setScanning(false); // clears spinner; updateRefreshBtn() picks the right label
         }
       } catch {}
     };
