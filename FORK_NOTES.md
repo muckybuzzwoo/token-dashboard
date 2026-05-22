@@ -1,5 +1,7 @@
 # Fork notes
 
+> **Last updated:** 2026-05-22 — see [recent commits](https://github.com/muckybuzzwoo/token-dashboard/commits/main) for the running change log.
+
 This fork integrates community pull requests that have not been merged into the upstream [nateherkai/token-dashboard](https://github.com/nateherkai/token-dashboard) repository, because upstream is currently inactive.
 
 Each integration was reviewed for security concerns (OWASP-style checks for SQL injection, path traversal, command injection, network exfiltration, dependency hygiene) and a passing test suite (`python -m unittest discover tests`).

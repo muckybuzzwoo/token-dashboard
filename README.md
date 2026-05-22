@@ -29,7 +29,7 @@ No `pip install`. No Node.js. No build step.
 ## Quickstart
 
 ```bash
-git clone https://github.com/nateherkai/token-dashboard.git
+git clone https://github.com/muckybuzzwoo/token-dashboard.git
 cd token-dashboard
 python3 cli.py dashboard
 ```
@@ -37,7 +37,7 @@ python3 cli.py dashboard
 > On Windows, if `python3` isn't on your PATH, substitute `py -3` for `python3` in every command below.
 
 The command:
-1. Scans `~/.claude/projects/` (first run can take 20–60 seconds on a heavy user's machine).
+1. Scans `~/.claude/projects/` (first run is fast in this fork — around 5–10 seconds for ~600 files / 60k+ messages thanks to the batched-insert scanner from PR #18).
 2. Starts a local server at http://127.0.0.1:8080.
 3. Opens your default browser to that URL.
 
@@ -89,17 +89,18 @@ python3 cli.py dashboard --no-scan   # skip the initial scan (use cached DB only
 
 Change the port: `PORT=9000 python3 cli.py dashboard`.
 
-## The 7 tabs
+## The 8 tabs
 
 The dashboard is a single page with a hash-router tab bar across the top. Each tab is backed by its own JSON API under `/api/`:
 
 - **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
-- **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result.
+- **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result. Has a "Copy MD" / "Download CSV" export for the current sort/filter.
 - **Sessions** — turn-by-turn view of any single session, with per-turn tokens and tool calls.
 - **Projects** — per-project comparison: tokens, session counts, and which files were touched most.
-- **Skills** — which skills you invoke most often, and (where we can measure them) their token cost. See [limitations](docs/KNOWN_LIMITATIONS.md#skills-token-counts-are-partial).
+- **Skills & Commands** — split between **You ran** (distinct sessions where you typed a `/slash-command`, tracked via Claude Code's native `attributionSkill` field) and **Claude invoked** (real `Skill` tool calls Claude emitted itself, typically from `Task`/`Agent`-dispatched subagents). Also shows per-skill output-token budget (parsed from `SKILL.md`) vs. measured p50/p95, total cost, and total including subagent attribution. See [limitations](docs/KNOWN_LIMITATIONS.md#skills-token-counts-are-partial).
+- **RTK** — optional [rtk](https://github.com/rtk-ai/rtk) savings view if the CLI is installed at `~/.local/bin/rtk`. Gracefully degrades on Windows or when RTK is absent (shows install instructions).
 - **Tips** — rule-based suggestions for reducing token usage (repeated file reads, oversized tool results, low cache-hit rate, etc.).
-- **Settings** — switch pricing between API / Pro / Max / Max-20x so cost figures everywhere else reflect your actual plan.
+- **Settings** — switch pricing between API / Pro / Max / Max-20x / Team plans so cost figures everywhere else reflect your actual plan. Also lets you switch the `.claude` folder at runtime.
 
 The Overview tab also has a built-in "What do these numbers mean?" panel that explains input/output/cache tokens in plain English.
 
