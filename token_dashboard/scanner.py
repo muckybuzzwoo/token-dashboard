@@ -214,29 +214,12 @@ def _project_slug(file_path: Path, projects_root: Path) -> str:
     return rel.parts[0]
 
 
-def _evict_prior_snapshots(conn, session_id: str, message_id: str, keep_uuid: str) -> None:
-    """Remove older streaming snapshots for the same (session_id, message_id).
+def _evict_prior_snapshots_bulk(conn, keepers: List[Tuple[str, str, str]]) -> None:
+    """Remove older streaming snapshots for many (session_id, message_id) pairs.
 
     Claude Code writes 2–3 JSONL lines per assistant response (partial → final)
     with identical message.id but distinct top-level uuids. Only the final
     tally matches billing, so earlier snapshots must be replaced, not summed.
-
-    Single-row form kept for historical reference; the production scan path
-    now uses ``_evict_prior_snapshots_bulk``.
-    """
-    old = [r[0] for r in conn.execute(
-        "SELECT uuid FROM messages WHERE session_id=? AND message_id=? AND uuid!=?",
-        (session_id, message_id, keep_uuid),
-    )]
-    if not old:
-        return
-    placeholders = ",".join("?" * len(old))
-    conn.execute(f"DELETE FROM tool_calls WHERE message_uuid IN ({placeholders})", old)
-    conn.execute(f"DELETE FROM messages WHERE uuid IN ({placeholders})", old)
-
-
-def _evict_prior_snapshots_bulk(conn, keepers: List[Tuple[str, str, str]]) -> None:
-    """Batched form of ``_evict_prior_snapshots``.
 
     ``keepers`` is a list of ``(session_id, message_id, keep_uuid)`` triples
     representing the final snapshot we are about to insert for each
