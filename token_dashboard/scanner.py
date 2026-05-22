@@ -25,12 +25,12 @@ INSERT OR REPLACE INTO messages (
   uuid, parent_uuid, session_id, project_slug, cwd, git_branch, cc_version, entrypoint,
   type, is_sidechain, agent_id, timestamp, model, stop_reason, prompt_id, message_id,
   input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
-  prompt_text, prompt_chars, tool_calls_json
+  prompt_text, prompt_chars, tool_calls_json, attribution_skill
 ) VALUES (
   :uuid, :parent_uuid, :session_id, :project_slug, :cwd, :git_branch, :cc_version, :entrypoint,
   :type, :is_sidechain, :agent_id, :timestamp, :model, :stop_reason, :prompt_id, :message_id,
   :input_tokens, :output_tokens, :cache_read_tokens, :cache_create_5m_tokens, :cache_create_1h_tokens,
-  :prompt_text, :prompt_chars, :tool_calls_json
+  :prompt_text, :prompt_chars, :tool_calls_json, :attribution_skill
 )
 """
 
@@ -189,9 +189,10 @@ def parse_record(rec: dict, project_slug: str) -> Tuple[dict, List[dict]]:
         "stop_reason":  msg_obj.get("stop_reason"),
         "prompt_id":    rec.get("promptId"),
         "message_id":   msg_obj.get("id"),
-        "prompt_text":  text,
-        "prompt_chars": chars,
-        "tool_calls_json": None,
+        "prompt_text":       text,
+        "prompt_chars":      chars,
+        "tool_calls_json":   None,
+        "attribution_skill": rec.get("attributionSkill") or None,
         **_usage(rec),
     }
     tools = _extract_tools(rec)

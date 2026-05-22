@@ -200,39 +200,106 @@ class SkillBreakdownTests(unittest.TestCase):
         init_db(self.db)
         with connect(self.db) as c:
             c.executescript("""
-            INSERT INTO messages (uuid, session_id, project_slug, type, timestamp)
+            INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, attribution_skill)
             VALUES
-              ('u1','s1','pA','user','2026-04-10T00:00:00Z'),
-              ('a1','s1','pA','assistant','2026-04-10T00:00:01Z'),
-              ('u2','s2','pA','user','2026-04-11T00:00:00Z'),
-              ('a2','s2','pA','assistant','2026-04-11T00:00:01Z');
+              -- Baseline: Skill tool calls on assistant messages.
+              ('u1','s1','pA','user','2026-04-10T00:00:00Z',NULL),
+              ('a1','s1','pA','assistant','2026-04-10T00:00:01Z',NULL),
+              ('u2','s2','pA','user','2026-04-11T00:00:00Z',NULL),
+              ('a2','s2','pA','assistant','2026-04-11T00:00:01Z',NULL),
+
+              -- /polish-email in two distinct sessions (s3, s4). Multiple rows
+              -- per session must collapse to a single manual_session via
+              -- COUNT(DISTINCT session_id).
+              ('u3','s3','pA','user','2026-04-12T00:00:00Z','polish-email'),
+              ('a3','s3','pA','assistant','2026-04-12T00:00:01Z','polish-email'),
+              ('u4','s4','pA','user','2026-04-13T00:00:00Z','polish-email'),
+
+              -- /name-conversation only as attribution — no Skill tool calls.
+              -- Exercises the manual_inv LEFT JOIN arm of the UNION.
+              ('u5','s5','pA','user','2026-04-14T00:00:00Z','name-conversation'),
+
+              -- brainstorming also gets a manual session in s7, to verify the
+              -- COALESCE merge of a skill that has BOTH tool invocations and
+              -- manual sessions.
+              ('u7','s7','pA','user','2026-04-15T00:00:00Z','brainstorming'),
+
+              -- De-dupe guard: a user-type message in s8 holds a SYNTHESISED
+              -- Skill row (from the PR #12 slash-command extractor) for
+              -- 'polish-email'. attribution_skill is NULL because we want
+              -- this row to test the EXISTS filter in isolation — without it,
+              -- the synthesised row would bump tool_invocations even though
+              -- it lives on a user-type message.
+              ('u8','s8','pA','user','2026-04-16T00:00:00Z',NULL);
 
             INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, timestamp, is_error)
             VALUES
+              -- Real Skill tool_use blocks (on assistant messages).
               ('a1','s1','pA','Skill','brainstorming',NULL,'2026-04-10T00:00:01Z',0),
-              ('u1','s1','pA','_tool_result','use-123',500,'2026-04-10T00:00:05Z',0),
               ('a1','s1','pA','Skill','brainstorming',NULL,'2026-04-10T00:00:30Z',0),
-              ('u1','s1','pA','_tool_result','use-124',800,'2026-04-10T00:00:32Z',0),
               ('a2','s2','pA','Skill','create-skill',NULL,'2026-04-11T00:00:01Z',0),
-              ('u2','s2','pA','_tool_result','use-125',1200,'2026-04-11T00:00:02Z',0);
+
+              -- Synthesised Skill row on a USER message — must be filtered out
+              -- by the EXISTS clause on messages.type='assistant'.
+              ('u8','s8','pA','Skill','polish-email',NULL,'2026-04-16T00:00:00Z',0);
             """)
             c.commit()
 
     def test_groups_by_skill(self):
+        # brainstorming: 2 tool invocations + 1 manual session — exercises
+        # the COALESCE merge branch of the UNION.
         rows = skill_breakdown(self.db)
         by_name = {r["skill"]: r for r in rows}
-        self.assertEqual(by_name["brainstorming"]["invocations"], 2)
-        self.assertEqual(by_name["brainstorming"]["sessions"], 1)
-        self.assertEqual(by_name["create-skill"]["invocations"], 1)
+        self.assertEqual(by_name["brainstorming"]["tool_invocations"], 2)
+        self.assertEqual(by_name["brainstorming"]["manual_sessions"], 1)
+        self.assertEqual(by_name["create-skill"]["tool_invocations"], 1)
+        self.assertEqual(by_name["create-skill"]["manual_sessions"], 0)
 
-    def test_orders_by_invocations(self):
+    def test_manual_only_skill_appears(self):
+        # name-conversation has no Skill tool_use blocks — only an
+        # attribution_skill entry. Exercises the manual_inv LEFT JOIN tool_inv
+        # WHERE t.skill IS NULL arm of the UNION.
         rows = skill_breakdown(self.db)
-        self.assertEqual(rows[0]["skill"], "brainstorming")
+        by_name = {r["skill"]: r for r in rows}
+        self.assertIn("name-conversation", by_name)
+        self.assertEqual(by_name["name-conversation"]["manual_sessions"], 1)
+        self.assertEqual(by_name["name-conversation"]["tool_invocations"], 0)
+
+    def test_manual_sessions_distinct(self):
+        # /polish-email has three attribution rows across two distinct sessions
+        # (s3 has two rows, s4 has one) — must collapse to 2 via COUNT(DISTINCT).
+        # s8's synthesised tool_calls row must NOT count toward tool_invocations.
+        rows = skill_breakdown(self.db)
+        by_name = {r["skill"]: r for r in rows}
+        self.assertEqual(by_name["polish-email"]["manual_sessions"], 2)
+        self.assertEqual(by_name["polish-email"]["tool_invocations"], 0)
+
+    def test_synthesised_rows_filtered_out(self):
+        # The EXISTS filter on messages.type='assistant' must exclude the
+        # synthesised Skill row on u8 (a user-type message). If it leaked in,
+        # tool_invocations for polish-email would be 1 instead of 0.
+        rows = skill_breakdown(self.db)
+        by_name = {r["skill"]: r for r in rows}
+        self.assertEqual(by_name["polish-email"]["tool_invocations"], 0,
+                         "synthesised slash-command rows on user messages "
+                         "must not double-count against attribution_skill")
+
+    def test_orders_by_combined_total(self):
+        # brainstorming has 2 tool + 1 manual = 3; polish-email has 0 tool
+        # + 2 manual = 2 — ordering uses the sum.
+        rows = skill_breakdown(self.db)
+        names = [r["skill"] for r in rows]
+        self.assertEqual(names[0], "brainstorming")
+        self.assertLess(names.index("brainstorming"), names.index("polish-email"))
 
     def test_respects_since(self):
-        rows = skill_breakdown(self.db, since="2026-04-11T00:00:00Z")
-        names = [r["skill"] for r in rows]
-        self.assertEqual(names, ["create-skill"])
+        rows = skill_breakdown(self.db, since="2026-04-12T00:00:00Z")
+        names = {r["skill"] for r in rows}
+        # The 2026-04-10 brainstorming tool calls and 2026-04-11 create-skill
+        # both drop out of the window.
+        self.assertNotIn("create-skill", names)
+        self.assertIn("polish-email", names)
+        self.assertIn("name-conversation", names)
 
 
 class ProjectNameTests(unittest.TestCase):

@@ -47,14 +47,18 @@ class ServerSkillBudgetTests(unittest.TestCase):
                 "VALUES ('u0', 's1', 'p', 'user', '2026-04-10T00:00:00Z', ?, 0)",
                 (str(self.project / "src"),),
             )
-            # Invoke the skill, then emit assistant output well over budget × 1.2 (>120 tokens).
-            c.execute(
-                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, timestamp, is_error) "
-                "VALUES ('a1', 's1', 'p', 'Skill', 'tight-skill', '2026-04-10T00:00:01Z', 0)",
-            )
+            # The assistant message that holds the Skill tool_use block (uuid m1)
+            # AND the over-budget output. tool_calls.message_uuid points at it
+            # (mirrors how scan_file writes both in lockstep). With the merged
+            # skill_breakdown's EXISTS(...m.type='assistant') filter, the tool
+            # row must join to a real assistant row to count.
             c.execute(
                 "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, output_tokens) "
                 "VALUES ('m1', 's1', 'p', 'assistant', '2026-04-10T00:00:02Z', 500)",
+            )
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, timestamp, is_error) "
+                "VALUES ('m1', 's1', 'p', 'Skill', 'tight-skill', '2026-04-10T00:00:01Z', 0)",
             )
             c.commit()
 
@@ -113,17 +117,19 @@ class ServerSkillSubagentTests(unittest.TestCase):
                 "INSERT INTO messages (uuid, session_id, project_slug, type, timestamp) "
                 "VALUES ('u0', 's1', 'p', 'user', '2026-04-10T00:00:00Z')",
             )
-            # Skill invocation.
-            c.execute(
-                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, timestamp, is_error) "
-                "VALUES ('a1', 's1', 'p', 'Skill', 'orchestrator', '2026-04-10T00:00:01Z', 0)",
-            )
             # Own cost: main-chain assistant emits 100 output tokens on claude-opus-4-5.
+            # Inserted before the tool_calls row so the EXISTS join in
+            # skill_breakdown's tool_inv CTE can resolve.
             c.execute(
                 "INSERT INTO messages (uuid, session_id, project_slug, type, is_sidechain, timestamp, "
                 "model, output_tokens) "
                 "VALUES ('m1', 's1', 'p', 'assistant', 0, '2026-04-10T00:00:02Z', "
                 "'claude-opus-4-5', 100)",
+            )
+            # Skill invocation parented to that assistant message (m1).
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, timestamp, is_error) "
+                "VALUES ('m1', 's1', 'p', 'Skill', 'orchestrator', '2026-04-10T00:00:01Z', 0)",
             )
             # Sidechain subagent chain: user injection + assistant response.
             c.execute(
