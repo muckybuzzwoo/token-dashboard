@@ -10,13 +10,14 @@ Inspired by [phuryn/claude-usage](https://github.com/phuryn/claude-usage) but di
 
 ## Status
 
-Working codebase. 75 Python unit tests (`python3 -m unittest discover tests`). Seven UI tabs wired up (Overview, Prompts, Sessions, Projects, Skills, Tips, Settings). Runs on macOS, Windows, and Linux.
+Working codebase. Python unit tests live in `tests/` (`python3 -m unittest discover tests`). UI tabs are JS modules in `web/routes/` (Overview, Prompts, Sessions, Projects, Skills, RTK, Tips, Settings). Runs on macOS, Windows, and Linux.
 
 ## Architecture
 
 - `cli.py` → `token_dashboard/scanner.py` → `~/.claude/token-dashboard.db` (SQLite)
 - `token_dashboard/server.py` exposes JSON APIs (`/api/*`) + SSE stream (`/api/stream`) + static frontend (`web/`)
 - `web/` is vanilla JS, no build step — hash router + ECharts
+- Each UI tab is one file in `web/routes/<tab>.js`; chart helpers live in `web/charts.js`; CSV export in `web/export.js`.
 
 ## Data source
 
@@ -27,8 +28,8 @@ Claude Code writes one JSONL file per session to `~/.claude/projects/<project-sl
 - **Fully local.** No telemetry, no remote calls for user data. Tests run offline.
 - **Stdlib only.** No `pip install`. If a new feature needs a third-party library, argue for it first — we're willing to pay ergonomics cost to keep install friction at zero.
 - **SQLite parameter binding always.** Any f-string in a SQL statement must interpolate only internal, caller-controlled values (column names, placeholder lists). User-reachable values go through `?`.
-- **Small files with clear responsibilities.** If a file grows past ~400 lines or accretes three distinct concerns, split it.
-- **Streaming-snapshot dedup.** When adding scanner logic that joins the `messages` table, remember `(session_id, message_id)` is the dedup key, not `uuid`. See `scanner._evict_prior_snapshots` and the migration note in `db._migrate_add_message_id`.
+- **Small files with clear responsibilities.** Prefer one concern per module. Once a file passes ~500 lines or starts accreting unrelated concerns, ask whether it's time to split — `db.py` and `server.py` are the current outliers and OK as-is.
+- **Streaming-snapshot dedup.** When adding scanner logic that joins the `messages` table, remember `(session_id, message_id)` is the dedup key, not `uuid`. See `scanner._evict_prior_snapshots_bulk` and the migration note in `db._migrate_add_message_id`.
 
 ## Customizing
 
