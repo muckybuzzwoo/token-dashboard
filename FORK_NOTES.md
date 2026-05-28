@@ -1,6 +1,6 @@
 # Fork notes
 
-> **Last updated:** 2026-05-28 — see [recent commits](https://github.com/muckybuzzwoo/token-dashboard/commits/main) for the running change log.
+> **Last updated:** 2026-05-28 (tips engine expansion + strict plugin-slug match) — see [recent commits](https://github.com/muckybuzzwoo/token-dashboard/commits/main) for the running change log.
 
 This fork integrates community pull requests that have not been merged into the upstream [nateherkai/token-dashboard](https://github.com/nateherkai/token-dashboard) repository, because upstream is currently inactive.
 
@@ -43,6 +43,19 @@ Each integration was reviewed for security concerns (OWASP-style checks for SQL 
 - The optional RTK savings tab probes `~/.local/bin/rtk` at request time and shows install instructions when absent; on Windows it always shows the install state because that path does not exist.
 - Two attribution tabs from PR #22: **Workspaces** (bipartite Sankey of agent cwd → file target + cross-workspace leaks table) and **Subagents & Orchestration** (per-model main / Task-subagent / auto-compaction split, SDK-entrypoint runs, dispatcher → child dispatch tree). New tip rule fires when an agent in workspace X reads files in workspace Y > 50 times in 7 days. The upstream PR's hardcoded tier-routing skill panel (`orchestrate` / `agentic-efficiency-harness` / `pareto-cascade-delivery` / `run-benchmark`) was stripped because this fork's owner does not use those skills — the corresponding `tier_routing_stats()` query, `tier_routing_gap_tips()` rule, and the first KPI tile in the Subagents page are absent in this fork.
 - Session detail page (`#/sessions/<id>`) header shows the **full** session UUID, not a truncated `4edcfece…` prefix — useful when copying the ID for bug reports or cross-referencing JSONL files. Listings (Sessions tab, Top sessions tables) keep the 8-character prefix to save horizontal space.
+- **Tips engine expansion (2026-05-28)** — 10 additional rule-based tip detectors layered on top of the existing cache / repeat-file / repeat-bash / right-size / tool-bloat / subagent-outlier / cross-workspace / skill-budget / claude-md-size rules:
+  - `dead-skills` — installed skills with zero `Skill`-tool invocations in 90 days, excluding those installed in the past 30 days (file mtime as install-age proxy). Fires when at least 5 dead skills are found.
+  - `subagent-sprawl` — sessions where sidechain (subagent) tokens exceed 2× main-chain tokens with >50k sidechain total in 7 days, excluding `acompact-*` auto-compaction.
+  - `bash-bloat` — Bash commands averaging >5k tokens of output without an obvious output limiter (`head`, `tail`, `wc -l`, `Select-Object -First`, `-TotalCount`, …). Cross-shell heuristic. Requires the new `tool_calls.tool_use_id` column to join command rows to their `_tool_result` rows.
+  - `context-pressure` — sessions whose peak per-turn net-new tokens (`input + cache_create_5m + cache_create_1h`, deliberately excluding `cache_read_tokens` because Anthropic multi-counts cache reads across breakpoints) exceeds 100k.
+  - `bash-errors` — Bash commands that errored ≥3 times in 3 days with identical command text.
+  - `web-fetch-volume` — sessions with ≥15 web-fetch calls in 7 days. Matches `WebFetch` and any `mcp__server__tool` whose name carries `fetch` / `read_url` / `scrape` / `crawl` / `browser_navigate` — no specific brand (Jina, Firecrawl, …) is hard-coded.
+  - `opus-only` — projects where >90% of assistant turns in 14 days ran on Opus, with at least 50 turns to filter noise.
+  - `mcp-sprawl` — ≥12 distinct MCP servers active in 7 days.
+  - `claude-md-stack` — a cwd whose ancestry contains ≥3 CLAUDE.md files totalling >400 lines.
+  - `long-skill-descriptions` — ≥3 installed skill descriptions exceed 400 chars.
+- **Strict plugin-slug match in the skill catalog (2026-05-28)** — `_slugs_for()` in `skills.py` previously registered every non-structural ancestor path segment as a possible `<plugin>:<skill>` prefix. On Windows the home path leaked `Users` and the username into the catalog as fake plugin names; on either OS the marketplace directory name was indistinguishable from a real plugin. The catalog now anchors strictly on the two documented on-disk layouts (`marketplaces/<m>/plugins/<plugin>/skills/...` and `cache/<m>/<plugin>/<version>?/skills/...`) plus a plugin-root `SKILL.md` fallback when the parent directory matches a version pattern. The `skill_listing_budget_tips` candidate list dedupes by `SKILL.md` path and prefers the plugin-qualified form for display.
+- **`tool_calls.tool_use_id` column (2026-05-28)** — additive schema migration linking each tool_use row to its matching `_tool_result` row via the `tool_use_id`. Required for `bash-bloat` and `bash-errors` per-command attribution. Migration auto-runs on next `init_db()` (server start) and is idempotent. As with prior migrations, the data tables (`messages`, `tool_calls`, `files`, `summary_meta`) are cleared so the next scan replays JSONLs with the new column populated — source of truth lives on disk, full rescan is ~10 seconds on commodity hardware.
 
 ## Local conventions for this fork's owner
 
