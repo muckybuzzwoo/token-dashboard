@@ -506,6 +506,146 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     return out
 
 
+# ── New tip: dead skills (zero invocations in 90d) ───────────────────────────
+
+_DEAD_SKILLS_WINDOW_DAYS = 90
+_DEAD_SKILLS_MIN_AGE_DAYS = 30
+_DEAD_SKILLS_MIN_COUNT = 5
+
+
+def dead_skills_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag installed skills with zero `Skill`-tool invocations in 90 days.
+
+    Companion to `skill_listing_budget_tips` — that tip ranks least-used skills
+    when the budget is exceeded; this one calls out skills that are
+    *categorically* dead so they can be uninstalled, regardless of budget.
+
+    Skills installed in the last 30 days are excluded (file mtime as install-age
+    proxy — same semantics on macOS, Linux, and Windows).
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, _DEAD_SKILLS_WINDOW_DAYS)
+    now = time.time()
+    min_age = _DEAD_SKILLS_MIN_AGE_DAYS * 86400
+
+    from .skills import cached_catalog
+    catalog = cached_catalog(db_path)
+    if not catalog:
+        return []
+
+    with connect(db_path) as c:
+        used_slugs = {r["target"] for r in c.execute(
+            """SELECT DISTINCT target FROM tool_calls
+                WHERE tool_name='Skill' AND target IS NOT NULL AND target != ''
+                  AND timestamp >= ?""",
+            (since,),
+        )}
+
+    # Group slugs by SKILL.md path so each file is judged once. A skill is dead
+    # iff *none* of its registered slugs (bare and plugin-qualified) saw an
+    # invocation.
+    per_path: dict[str, list[str]] = {}
+    for slug, info in catalog.items():
+        per_path.setdefault(info["path"], []).append(slug)
+
+    dead: list[str] = []
+    for path, slugs in per_path.items():
+        if any(s in used_slugs for s in slugs):
+            continue
+        try:
+            mtime = Path(path).stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime < min_age:
+            continue  # recently installed — give it time
+        # Display label: prefer plugin-qualified form.
+        plugin_form = sorted(s for s in slugs if ":" in s)
+        dead.append(plugin_form[0] if plugin_form else sorted(slugs)[0])
+
+    if len(dead) < _DEAD_SKILLS_MIN_COUNT:
+        return []
+
+    key = _key("dead-skills", "overall")
+    if _is_dismissed(db_path, key):
+        return []
+
+    dead.sort()
+    sample = ", ".join(dead[:8])
+    if len(dead) > 8:
+        sample += f", and {len(dead) - 8} more"
+    return [_make_tip(
+        key=key, category="dead-skills", severity="info",
+        title=f"{len(dead)} skills haven't been used in {_DEAD_SKILLS_WINDOW_DAYS} days",
+        body=(f"These skills are installed but have zero invocations in the past "
+              f"{_DEAD_SKILLS_WINDOW_DAYS} days. Uninstalling them frees up "
+              "skill-listing budget and reduces context noise. "
+              f"Candidates: {sample}."),
+        scope="overall",
+        links=[
+            {"label": "Open Skills tab", "href": "#/skills"},
+            _doc_link("Anthropic: extend Claude with skills",
+                      "https://code.claude.com/docs/en/skills"),
+        ],
+    )]
+
+
+# ── New tip: subagent sprawl ─────────────────────────────────────────────────
+
+_SUBAGENT_SPRAWL_RATIO = 2.0
+_SUBAGENT_SPRAWL_MIN_SIDE_TOKENS = 50_000
+
+
+def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag sessions where sidechain (subagent) tokens dominate main-chain tokens.
+
+    Subagents have their own context — that's the point. But when they return
+    very large payloads, the main chain absorbs the cost. A 2× sidechain:main
+    ratio with >50k sidechain tokens in 7 days is a strong "subagents are doing
+    too much per dispatch" signal.
+
+    Excludes `acompact-*` agent ids (auto-compaction, not user-dispatched).
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 7)
+    sql = """
+      SELECT session_id,
+             SUM(CASE WHEN is_sidechain=0 THEN input_tokens+output_tokens ELSE 0 END) AS main_t,
+             SUM(CASE WHEN is_sidechain=1
+                          AND (agent_id IS NULL OR agent_id NOT LIKE 'acompact-%')
+                      THEN input_tokens+output_tokens ELSE 0 END) AS side_t
+        FROM messages
+       WHERE type='assistant' AND timestamp >= ?
+       GROUP BY session_id
+       HAVING side_t >= ? AND side_t > ? * (main_t + 1)
+       ORDER BY side_t DESC
+       LIMIT 5
+    """
+    out = []
+    with connect(db_path) as c:
+        for row in c.execute(sql, (since, _SUBAGENT_SPRAWL_MIN_SIDE_TOKENS,
+                                   _SUBAGENT_SPRAWL_RATIO)):
+            sid = row["session_id"]
+            key = _key("subagent-sprawl", sid)
+            if _is_dismissed(db_path, key):
+                continue
+            ratio = (row["side_t"] or 0) / max(row["main_t"] or 1, 1)
+            out.append(_make_tip(
+                key=key, category="subagent-sprawl", severity="info",
+                title=f"Subagent tokens dominate session {sid[:8]}…",
+                body=(f"Sidechain (subagent) tokens: {int(row['side_t']):,}. "
+                      f"Main-chain tokens: {int(row['main_t']):,}. "
+                      f"That's {ratio:.1f}× the main chain. Subagents may be "
+                      "returning more than the orchestrator needs — consider "
+                      "asking for narrower summaries or splitting dispatches."),
+                scope=sid,
+                links=[
+                    _session_link(sid, "Open session"),
+                    {"label": "Subagents view", "href": "#/subagents"},
+                ],
+            ))
+    return out
+
+
 def all_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
     return [
         *cache_discipline_tips(db_path, today_iso),
@@ -515,4 +655,6 @@ def all_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         *skill_listing_budget_tips(db_path, today_iso),
         *claude_md_size_tips(db_path, today_iso),
         *cross_workspace_tips(db_path, today_iso),
+        *dead_skills_tips(db_path, today_iso),
+        *subagent_sprawl_tips(db_path, today_iso),
     ]

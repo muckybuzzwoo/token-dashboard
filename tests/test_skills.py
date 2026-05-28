@@ -103,6 +103,14 @@ class CatalogTests(unittest.TestCase):
         p = Path(".claude/skills/frontend-design/SKILL.md")
         self.assertEqual(_slugs_for(p), ["frontend-design"])
 
+    def test_slugs_for_plugin_root_layout(self):
+        # Some plugins put SKILL.md at the version root (no skills/ subdirectory).
+        # The slug must be the plugin name, never the version string.
+        p = Path("plugins/cache/visual-explainer-marketplace/visual-explainer/0.6.3/SKILL.md")
+        slugs = set(_slugs_for(p))
+        self.assertIn("visual-explainer", slugs)
+        self.assertNotIn("0.6.3", slugs)
+
     def test_missing_skill_not_in_catalog(self):
         # No file written; lookup should return None (server surfaces as tokens_per_call: None)
         cat = scan_catalog([self.tmp / "skills"])

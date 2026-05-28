@@ -9,6 +9,7 @@ from token_dashboard.tips import (
     cache_discipline_tips, repeated_target_tips, right_size_tips,
     outlier_tips, cross_workspace_tips, all_tips, dismiss_tip,
     skill_listing_budget_tips, claude_md_size_tips,
+    dead_skills_tips, subagent_sprawl_tips,
 )
 
 
@@ -314,6 +315,147 @@ class SkillListingBudgetTests(unittest.TestCase):
             candidates_section.count("shopware-app-system"), 1,
             "Plugin skill must appear exactly once in candidates list",
         )
+
+
+class DeadSkillsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = str(self.tmp / "t.db")
+        init_db(self.db)
+        self.skills_root = self.tmp / "fake_home" / ".claude"
+        self.skills_root.mkdir(parents=True)
+
+    def _patch_roots(self):
+        from token_dashboard import skills as s
+        return mock.patch.object(s, "_DEFAULT_ROOTS",
+                                 [self.skills_root / "skills"]), s
+
+    def _age_skill(self, path: Path, days: int) -> None:
+        """Set mtime to `days` ago — used to bypass the 'recently installed' filter."""
+        old = os.path.getmtime(path) - days * 86400
+        os.utime(path, (old, old))
+
+    def test_few_dead_skills_no_tip(self):
+        # 4 dead skills < threshold of 5
+        for i in range(4):
+            md = _make_skill(self.skills_root, f"deadlet{i}", "x" * 50)
+            self._age_skill(md, days=120)
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = dead_skills_tips(self.db, today_iso="2026-05-19T00:00:00")
+        self.assertEqual(tips, [])
+
+    def test_many_dead_skills_emits_tip(self):
+        for i in range(6):
+            md = _make_skill(self.skills_root, f"deadlet{i}", "x" * 50)
+            self._age_skill(md, days=120)
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = dead_skills_tips(self.db, today_iso="2026-05-19T00:00:00")
+        self.assertTrue(tips)
+        t = tips[0]
+        _assert_tip_shape(self, t)
+        self.assertEqual(t["category"], "dead-skills")
+        self.assertEqual(t["severity"], "info")
+        self.assertIn("6 skills", t["title"])
+
+    def test_used_skill_excluded(self):
+        for i in range(6):
+            md = _make_skill(self.skills_root, f"d{i}", "x" * 50)
+            self._age_skill(md, days=120)
+        # One of them was invoked within 90d → not dead.
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, timestamp, is_error) VALUES "
+                "('m','s','p','Skill','d2','2026-05-15T00:00:00Z',0)"
+            )
+            c.commit()
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = dead_skills_tips(self.db, today_iso="2026-05-19T00:00:00")
+        self.assertTrue(tips)
+        body = tips[0]["body"]
+        self.assertNotIn("d2,", body)
+        self.assertNotIn("d2.", body)
+        self.assertIn("5 skills", tips[0]["title"])
+
+    def test_recently_installed_skills_excluded(self):
+        # 6 skills, all dead, but only 4 are >=30d old
+        for i in range(4):
+            md = _make_skill(self.skills_root, f"old{i}", "x" * 50)
+            self._age_skill(md, days=120)
+        for i in range(2):
+            _make_skill(self.skills_root, f"new{i}", "x" * 50)  # fresh mtime
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = dead_skills_tips(self.db, today_iso="2026-05-19T00:00:00")
+        # 4 dead skills < min_count → no tip
+        self.assertEqual(tips, [])
+
+
+class SubagentSprawlTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def _ins(self, *, uuid, session, ts, sidechain, input_t=0, output_t=0,
+             agent_id=None):
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, "
+                "timestamp, model, is_sidechain, agent_id, input_tokens, output_tokens) "
+                "VALUES (?, ?, 'p', 'assistant', ?, 'claude-opus-4-7', ?, ?, ?, ?)",
+                (uuid, session, ts, sidechain, agent_id, input_t, output_t),
+            )
+            c.commit()
+
+    def test_sprawl_session_flagged(self):
+        # Main chain: 10k tokens; sidechain: 100k → ratio 10× and > 50k → flag.
+        self._ins(uuid="m1", session="sprawl", ts="2026-05-15T00:00:00Z",
+                  sidechain=0, output_t=10_000)
+        self._ins(uuid="s1", session="sprawl", ts="2026-05-15T00:01:00Z",
+                  sidechain=1, agent_id="research", output_t=100_000)
+        tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        t = tips[0]
+        _assert_tip_shape(self, t)
+        self.assertEqual(t["category"], "subagent-sprawl")
+        self.assertIn("sprawl", t["scope"])
+        hrefs = [l["href"] for l in t["links"]]
+        self.assertIn("#/sessions/sprawl", hrefs)
+
+    def test_balanced_session_not_flagged(self):
+        # Main: 100k, sidechain: 50k → ratio 0.5× → no flag.
+        self._ins(uuid="m1", session="balanced", ts="2026-05-15T00:00:00Z",
+                  sidechain=0, output_t=100_000)
+        self._ins(uuid="s1", session="balanced", ts="2026-05-15T00:01:00Z",
+                  sidechain=1, agent_id="research", output_t=50_000)
+        tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+    def test_small_sidechain_under_threshold_not_flagged(self):
+        # Ratio is huge but sidechain absolute < 50k → no flag (noise floor).
+        self._ins(uuid="m1", session="tiny", ts="2026-05-15T00:00:00Z",
+                  sidechain=0, output_t=100)
+        self._ins(uuid="s1", session="tiny", ts="2026-05-15T00:01:00Z",
+                  sidechain=1, agent_id="research", output_t=10_000)
+        tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+    def test_auto_compaction_sidechain_excluded(self):
+        # Heavy 'sidechain' but it's auto-compaction (acompact-*) → ignored.
+        self._ins(uuid="m1", session="compact", ts="2026-05-15T00:00:00Z",
+                  sidechain=0, output_t=10_000)
+        self._ins(uuid="s1", session="compact", ts="2026-05-15T00:01:00Z",
+                  sidechain=1, agent_id="acompact-abc123", output_t=100_000)
+        tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
 
 
 class ClaudeMdSizeTests(unittest.TestCase):

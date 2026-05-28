@@ -110,6 +110,14 @@ def _slugs_for(skill_md: Path) -> list[str]:
     if skill_md.name != "SKILL.md":
         return []
     skill_name = skill_md.parent.name
+    # Some plugins ship the SKILL.md at the plugin root (e.g.
+    # `cache/<m>/<plugin>/<version>/SKILL.md` — no `skills/` subdirectory).
+    # The immediate parent is then the version dir, which is not a usable
+    # slug. Walk one more up to the plugin directory name.
+    if _VERSION_RE.match(skill_name):
+        grandparent = skill_md.parent.parent.name
+        if grandparent and not _VERSION_RE.match(grandparent):
+            skill_name = grandparent
     slugs = {skill_name}
     plugin = _plugin_name_from_path(skill_md.parts)
     if plugin and plugin != skill_name:
