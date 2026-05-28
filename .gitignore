@@ -12,3 +12,8 @@ claude_api_pricing.htm
 
 # Local launcher (per-user, not part of the public repo)
 start_dashboard.bat
+
+# Per-session work artifacts (plans, playwright snapshots, smoke screenshots)
+.claude-bw/
+.playwright-mcp/
+smoke-*.png

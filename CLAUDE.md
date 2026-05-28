@@ -10,7 +10,7 @@ Inspired by [phuryn/claude-usage](https://github.com/phuryn/claude-usage) but di
 
 ## Status
 
-Working codebase. Python unit tests live in `tests/` (`python3 -m unittest discover tests`). UI tabs are JS modules in `web/routes/` (Overview, Prompts, Sessions, Projects, Skills, RTK, Tips, Settings). Runs on macOS, Windows, and Linux.
+Working codebase. Python unit tests live in `tests/` (`python3 -m unittest discover tests`). UI tabs are JS modules in `web/routes/` (Overview, Prompts, Sessions, Projects, Workspaces, Subagents, Skills, RTK, Tips, Settings). Runs on macOS, Windows, and Linux.
 
 ## Architecture
 
