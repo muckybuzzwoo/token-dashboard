@@ -728,6 +728,35 @@ class WebFetchVolumeTests(unittest.TestCase):
         tips = web_fetch_volume_tips(self.db, today_iso="2026-05-16T00:00:00")
         self.assertFalse(tips)
 
+    def test_out_of_window_webfetch_rows_excluded(self):
+        """Regression for SQL operator-precedence bug — without parentheses
+        around the OR, the 7-day timestamp filter was only applied to the
+        mcp__% branch, and historical WebFetch rows leaked through forever."""
+        with connect(self.db) as c:
+            # 14 in-window WebFetch rows (below the 15 threshold on their own)
+            for i in range(14):
+                c.execute(
+                    "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                    "tool_name, target, timestamp, is_error) VALUES "
+                    "(?, 'sess', 'p', 'WebFetch', 'https://example.com', "
+                    "'2026-05-15T00:00:00Z', 0)",
+                    (f"in{i}",),
+                )
+            # 10 OLD WebFetch rows from 6 months ago — must NOT be counted
+            for i in range(10):
+                c.execute(
+                    "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                    "tool_name, target, timestamp, is_error) VALUES "
+                    "(?, 'sess', 'p', 'WebFetch', 'https://example.com', "
+                    "'2025-11-01T00:00:00Z', 0)",
+                    (f"old{i}",),
+                )
+            c.commit()
+        # With the bug, the session would count 24 fetches and trigger the tip.
+        # Fixed: only 14 in-window counts → below 15 threshold → no tip.
+        tips = web_fetch_volume_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
 
 class OpusOnlyWorkspaceTests(unittest.TestCase):
     def setUp(self):

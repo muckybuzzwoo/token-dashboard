@@ -655,8 +655,7 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
         rows = c.execute(
             """SELECT session_id, tool_name, COUNT(*) AS n
                  FROM tool_calls
-                WHERE tool_name = 'WebFetch'
-                   OR tool_name LIKE 'mcp__%'
+                WHERE (tool_name = 'WebFetch' OR tool_name LIKE 'mcp__%')
                   AND timestamp >= ?
                 GROUP BY session_id, tool_name""",
             (since,),
