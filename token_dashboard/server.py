@@ -19,6 +19,9 @@ from .db import (
     overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, skill_breakdown,
+    workspaces_matrix, cross_workspace_leaks,
+    subagent_breakdown, top_subagent_sessions,
+    orchestration_breakdown, dispatch_tree,
 )
 from .pricing import load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
@@ -413,6 +416,65 @@ def build_handler(db_path: str, projects_dir: Optional[str] = None):
                 if cached is not None:
                     return _send_json(self, cached)
                 data = session_turns(db_path, sid)
+                _cache_set(cache_key, data)
+                return _send_json(self, data)
+            if path == "/api/workspaces":
+                cached = _cache_get(cache_key)
+                if cached is not None:
+                    return _send_json(self, cached)
+                data = workspaces_matrix(db_path, since, until)
+                _cache_set(cache_key, data)
+                return _send_json(self, data)
+            if path == "/api/cross-workspace-leaks":
+                cached = _cache_get(cache_key)
+                if cached is not None:
+                    return _send_json(self, cached)
+                data = cross_workspace_leaks(
+                    db_path, limit=_clamp_limit(qs.get("limit", ["20"])[0], 20),
+                    since=since, until=until,
+                )
+                _cache_set(cache_key, data)
+                return _send_json(self, data)
+            if path == "/api/subagents":
+                cached = _cache_get(cache_key)
+                if cached is not None:
+                    return _send_json(self, cached)
+                rows = subagent_breakdown(db_path, since, until)
+                for r in rows:
+                    c = cost_for(r["model"], r, pricing)
+                    r["cost_usd"] = c["usd"]
+                    r["cost_estimated"] = c["estimated"]
+                top = top_subagent_sessions(
+                    db_path, limit=_clamp_limit(qs.get("limit", ["20"])[0], 20),
+                    since=since, until=until,
+                )
+                orch = orchestration_breakdown(db_path, since, until)
+                for bucket in ("by_kind", "by_entrypoint"):
+                    for r in orch[bucket]:
+                        c = cost_for(r["model"], r, pricing)
+                        r["cost_usd"] = c["usd"]
+                        r["cost_estimated"] = c["estimated"]
+                tree = dispatch_tree(
+                    db_path, limit=_clamp_limit(qs.get("limit", ["50"])[0], 50),
+                    since=since, until=until,
+                )
+                for r in tree:
+                    child_models = r["models"] or []
+                    if child_models:
+                        c = cost_for(child_models[0], r, pricing)
+                        r["child_cost_usd"] = c["usd"]
+                        r["child_cost_estimated"] = c["estimated"]
+                    else:
+                        r["child_cost_usd"] = None
+                        r["child_cost_estimated"] = True
+                data = {
+                    "breakdown": rows,
+                    "top_sessions": top,
+                    "by_kind": orch["by_kind"],
+                    "by_entrypoint": orch["by_entrypoint"],
+                    "sdk_runs": orch["sdk_runs"],
+                    "dispatch_tree": tree,
+                }
                 _cache_set(cache_key, data)
                 return _send_json(self, data)
             if path == "/api/tips":

@@ -163,6 +163,45 @@ export function groupedBarChart(el, { categories, series, formatter }) {
   return c;
 }
 
+export function sankeyChart(el, { nodes, links, formatter }) {
+  const c = mount(el);
+  // Accept nodes as either ['name', ...] or [{name: 'x'}, ...] — the bipartite
+  // workspaces matrix returns objects so it can carry layout hints later.
+  const nodeData = nodes.map(n => typeof n === 'string' ? { name: n } : n);
+  c.setOption({
+    ...NO_ANIM,
+    ...BASE,
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: '#0F1419',
+      borderColor: '#283040',
+      borderWidth: 1,
+      textStyle: { color: '#E6EDF3', fontFamily: 'Inter', fontSize: 12 },
+      padding: [8, 12],
+      formatter: p => {
+        const v = formatter ? formatter(p.value) : Number(p.value).toLocaleString();
+        if (p.dataType === 'edge') {
+          return `${p.data.source} → ${p.data.target}<br/><b>${v}</b>`;
+        }
+        return `<b>${p.name}</b><br/>${v}`;
+      },
+    },
+    series: [{
+      type: 'sankey',
+      data: nodeData,
+      links,
+      emphasis: { focus: 'adjacency' },
+      lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.4 },
+      label: { color: '#E6EDF3', fontFamily: 'Inter', fontSize: 11 },
+      nodeAlign: 'left',
+      left: 8, right: 120, top: 12, bottom: 12,
+      itemStyle: { borderColor: '#0F1419', borderWidth: 1 },
+    }],
+  });
+  return c;
+}
+
+
 export function donutChart(el, data) {
   const c = mount(el);
   c.setOption({

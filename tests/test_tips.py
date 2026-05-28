@@ -7,7 +7,7 @@ from unittest import mock
 from token_dashboard.db import init_db, connect
 from token_dashboard.tips import (
     cache_discipline_tips, repeated_target_tips, right_size_tips,
-    outlier_tips, all_tips, dismiss_tip,
+    outlier_tips, cross_workspace_tips, all_tips, dismiss_tip,
     skill_listing_budget_tips, claude_md_size_tips,
 )
 
@@ -129,6 +129,69 @@ class OutlierTests(unittest.TestCase):
         bloat = [t for t in tips if t["category"] == "tool-bloat"]
         self.assertTrue(bloat)
         self.assertEqual(bloat[0]["severity"], "warning")
+
+
+class CrossWorkspaceTipTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "cw.db")
+        init_db(self.db)
+        slug_a = "C--Users-a-projects-ProjA"
+        slug_b = "C--Users-a-projects-ProjB"
+        cwd_a = r"C:\Users\a\projects\ProjA"
+        cwd_b = r"C:\Users\a\projects\ProjB"
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, cwd, type, "
+                "is_sidechain, timestamp, model) VALUES "
+                "('m1','s1',?,?,'assistant',0,'2026-05-15T00:00:00Z','claude-opus-4-7')",
+                (slug_a, cwd_a),
+            )
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, cwd, type, "
+                "is_sidechain, timestamp, model) VALUES "
+                "('m2','s2',?,?,'assistant',0,'2026-05-15T00:00:00Z','claude-opus-4-7')",
+                (slug_b, cwd_b),
+            )
+            for i in range(60):
+                c.execute(
+                    "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                    "tool_name, target, timestamp, is_error) VALUES "
+                    "('m1','s1',?,'Read',?,?,0)",
+                    (slug_a, cwd_b + r"\spec.md", f"2026-05-15T00:0{i//10}:0{i%10}Z"),
+                )
+            c.commit()
+
+    def test_high_cross_workspace_activity_emits_tip(self):
+        tips = cross_workspace_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(any(t["category"] == "cross-workspace" for t in tips))
+        tip = [t for t in tips if t["category"] == "cross-workspace"][0]
+        self.assertIn("ProjA", tip["title"])
+        self.assertIn("ProjB", tip["title"])
+
+    def test_low_activity_under_threshold_no_tip(self):
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "small.db")
+        init_db(db)
+        slug = "C--Users-a-projects-ProjA"
+        cwd  = r"C:\Users\a\projects\ProjA"
+        with connect(db) as c:
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, cwd, type, "
+                "is_sidechain, timestamp, model) VALUES "
+                "('m1','s1',?,?,'assistant',0,'2026-05-15T00:00:00Z','claude-opus-4-7')",
+                (slug, cwd),
+            )
+            for i in range(3):
+                c.execute(
+                    "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                    "tool_name, target, timestamp, is_error) VALUES "
+                    "('m1','s1',?,'Read',?,?,0)",
+                    (slug, r"C:\Users\a\projects\Other\file.md", f"2026-05-15T00:00:0{i}Z"),
+                )
+            c.commit()
+        tips = cross_workspace_tips(db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(any(t["category"] == "cross-workspace" for t in tips))
 
 
 class DismissTests(unittest.TestCase):

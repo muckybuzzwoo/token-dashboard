@@ -160,6 +160,38 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             self.assertEqual(resp.read(), b"")
 
+    def test_workspaces_json_shape(self):
+        body = json.loads(self._get("/api/workspaces"))
+        # Empty fixture (no cwd, no tool_calls with file targets) still returns the
+        # full bipartite-sankey shape — proves the endpoint wires through cleanly.
+        self.assertIn("nodes", body)
+        self.assertIn("links", body)
+        self.assertIn("total_calls", body)
+        self.assertIn("self_loop_calls", body)
+        self.assertIn("cross_workspace_calls", body)
+        self.assertIn("tools_considered", body)
+        self.assertEqual(body["total_calls"], 0)
+
+    def test_cross_workspace_leaks_returns_list(self):
+        body = json.loads(self._get("/api/cross-workspace-leaks?limit=5"))
+        self.assertIsInstance(body, list)
+        # Limit clamping should accept the param without raising.
+        self.assertLessEqual(len(body), 5)
+
+    def test_subagents_json_shape(self):
+        body = json.loads(self._get("/api/subagents"))
+        # The endpoint wires six sub-queries (breakdown, top_sessions, by_kind,
+        # by_entrypoint, sdk_runs, dispatch_tree) — make sure none of them blow up
+        # on an empty-ish fixture and the response shape is stable.
+        for key in ("breakdown", "top_sessions", "by_kind",
+                    "by_entrypoint", "sdk_runs", "dispatch_tree"):
+            self.assertIn(key, body, f"missing key: {key}")
+            self.assertIsInstance(body[key], list)
+        # Cost-decoration happened: the haiku assistant row should have cost_usd present
+        # (None or a number, but the key must exist).
+        if body["breakdown"]:
+            self.assertIn("cost_usd", body["breakdown"][0])
+
     def test_rtk_json_reports_when_cli_is_missing(self):
         body = server._rtk_payload(home=os.path.join(self.tmp, "no-rtk-home"))
         self.assertFalse(body["available"])
