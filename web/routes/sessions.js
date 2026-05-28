@@ -101,10 +101,10 @@ function buildSession(root, id, turns, initFilter, initCol, initDir) {
 
   root.innerHTML = `
     <div class="card">
-      <h2 style="display:flex;align-items:center">
-        <span>Session ${fmt.htmlSafe(id.slice(0,8))}…</span>
+      <h2 style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;word-break:break-all">
+        <span>Session ${fmt.htmlSafe(id)}</span>
         <span class="spacer"></span>
-        <a href="#/sessions" class="muted">← all sessions</a>
+        <a href="#/sessions" class="muted" style="white-space:nowrap">← all sessions</a>
       </h2>
       <div class="flex muted" style="font-family:var(--mono);font-size:12px;flex-wrap:wrap;gap:14px">
         <span>${fmt.htmlSafe(project)}</span>
