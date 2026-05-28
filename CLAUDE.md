@@ -37,7 +37,7 @@ Env vars: `PORT` (default 8080), `HOST` (default 127.0.0.1), `CLAUDE_PROJECTS_DI
 
 ## Known limitations
 
-See `docs/KNOWN_LIMITATIONS.md`. Current summary: Skills `tokens_per_call` covers the three global roots (`~/.claude/skills/`, `~/.claude/scheduled-tasks/`, `~/.claude/plugins/`) plus project-local `.claude/skills/` directories discovered from cwds in the messages table. Only `Task`-dispatched subagent skills still show blank token counts.
+See `docs/KNOWN_LIMITATIONS.md`. Current summary: Skills `tokens_per_call` covers `~/.claude/skills/`, `~/.claude/scheduled-tasks/`, every `installPath` listed in `~/.claude/plugins/installed_plugins.json` (manifest-driven — marketplace clones excluded), plus project-local `.claude/skills/` directories discovered from cwds in the messages table. Only `Task`-dispatched subagent skills still show blank token counts.
 
 ## Verifying changes
 
