@@ -11,6 +11,10 @@ from token_dashboard.tips import (
     skill_listing_budget_tips, claude_md_size_tips,
     dead_skills_tips, subagent_sprawl_tips,
     bash_bloat_tips, _has_output_limiter,
+    context_pressure_tips, repeated_bash_errors_tips,
+    web_fetch_volume_tips, opus_only_workspace_tips,
+    mcp_sprawl_tips, claude_md_stack_tips,
+    long_skill_descriptions_tips, _is_web_fetch_tool,
 )
 
 
@@ -590,6 +594,293 @@ class ClaudeMdSizeTests(unittest.TestCase):
         self.assertEqual(big[0]["severity"], "info")
         # Drill-down link should be the Anthropic docs.
         self.assertTrue(any(l["href"].startswith("https://") for l in big[0]["links"]))
+
+
+class ContextPressureTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def _ins(self, *, uuid, session, input_t=0, cache_read=0, cache_5m=0, cache_1h=0):
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, "
+                "timestamp, model, input_tokens, cache_read_tokens, "
+                "cache_create_5m_tokens, cache_create_1h_tokens) VALUES "
+                "(?, ?, 'p', 'assistant', '2026-05-15T00:00:00Z', 'claude-opus-4-7', "
+                "?, ?, ?, ?)",
+                (uuid, session, input_t, cache_read, cache_5m, cache_1h),
+            )
+            c.commit()
+
+    def test_heavy_new_content_flagged(self):
+        # 50k uncached input + 60k cache_create = 110k net-new (>100k threshold)
+        self._ins(uuid="m1", session="big",
+                  input_t=50_000, cache_5m=60_000)
+        tips = context_pressure_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertEqual(tips[0]["category"], "context-pressure")
+
+    def test_cache_read_alone_does_not_trigger(self):
+        # 500k cache_read but only 10k net-new content → no flag.
+        # Anthropic multi-counts cache reads across breakpoints, so this is the
+        # critical regression: we must NOT use cache_read in the formula.
+        self._ins(uuid="m1", session="cachy",
+                  input_t=5_000, cache_read=500_000, cache_5m=5_000)
+        tips = context_pressure_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+    def test_low_session_not_flagged(self):
+        self._ins(uuid="m1", session="small",
+                  input_t=10_000, cache_5m=20_000)
+        tips = context_pressure_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class RepeatedBashErrorsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def _seed_error(self, *, cmd, tool_use_id, session="s1",
+                    ts="2026-05-15T00:00:00Z"):
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, timestamp, is_error, tool_use_id) VALUES "
+                "(?, ?, 'p', 'Bash', ?, ?, 0, ?)",
+                (f"m-{tool_use_id}", session, cmd, ts, tool_use_id),
+            )
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, timestamp, is_error, tool_use_id) VALUES "
+                "(?, ?, 'p', '_tool_result', ?, ?, 1, ?)",
+                (f"u-{tool_use_id}", session, tool_use_id, ts, tool_use_id),
+            )
+            c.commit()
+
+    def test_three_identical_errors_flagged(self):
+        for i in range(3):
+            self._seed_error(
+                cmd="docker compose up", tool_use_id=f"tu{i}",
+                ts=f"2026-05-15T00:0{i}:00Z",
+            )
+        tips = repeated_bash_errors_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertEqual(tips[0]["category"], "bash-errors")
+
+    def test_two_identical_errors_not_flagged(self):
+        for i in range(2):
+            self._seed_error(
+                cmd="docker compose up", tool_use_id=f"tu{i}",
+                ts=f"2026-05-15T00:0{i}:00Z",
+            )
+        tips = repeated_bash_errors_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class WebFetchVolumeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def test_tool_pattern_recogniser(self):
+        self.assertTrue(_is_web_fetch_tool("WebFetch"))
+        self.assertTrue(_is_web_fetch_tool("mcp__jina__read_url"))
+        self.assertTrue(_is_web_fetch_tool("mcp__firecrawl__scrape"))
+        self.assertTrue(_is_web_fetch_tool("mcp__playwright__browser_navigate"))
+        self.assertFalse(_is_web_fetch_tool("Bash"))
+        self.assertFalse(_is_web_fetch_tool("WebSearch"))
+        self.assertFalse(_is_web_fetch_tool("mcp__github__get_issue"))
+
+    def test_high_volume_session_flagged(self):
+        with connect(self.db) as c:
+            for i in range(20):
+                c.execute(
+                    "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                    "tool_name, target, timestamp, is_error) VALUES "
+                    "(?, 'web-heavy', 'p', 'WebFetch', 'https://example.com', "
+                    "'2026-05-15T00:00:00Z', 0)",
+                    (f"m{i}",),
+                )
+            c.commit()
+        tips = web_fetch_volume_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertEqual(tips[0]["category"], "web-fetch-volume")
+
+    def test_low_volume_session_not_flagged(self):
+        with connect(self.db) as c:
+            for i in range(5):
+                c.execute(
+                    "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                    "tool_name, target, timestamp, is_error) VALUES "
+                    "(?, 's', 'p', 'WebFetch', 'https://example.com', "
+                    "'2026-05-15T00:00:00Z', 0)",
+                    (f"m{i}",),
+                )
+            c.commit()
+        tips = web_fetch_volume_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class OpusOnlyWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def _seed_assistant(self, *, uuid, project, model, ts="2026-05-15T00:00:00Z"):
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO messages (uuid, session_id, project_slug, type, "
+                "timestamp, model) VALUES (?, 's', ?, 'assistant', ?, ?)",
+                (uuid, project, ts, model),
+            )
+            c.commit()
+
+    def test_opus_heavy_project_flagged(self):
+        for i in range(55):
+            self._seed_assistant(uuid=f"o{i}", project="heavy-proj",
+                                 model="claude-opus-4-7")
+        tips = opus_only_workspace_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertEqual(tips[0]["severity"], "cost")
+        self.assertIn("heavy-proj", tips[0]["title"])
+
+    def test_mixed_project_not_flagged(self):
+        for i in range(30):
+            self._seed_assistant(uuid=f"o{i}", project="mixed-proj",
+                                 model="claude-opus-4-7")
+        for i in range(30):
+            self._seed_assistant(uuid=f"s{i}", project="mixed-proj",
+                                 model="claude-sonnet-4-6")
+        tips = opus_only_workspace_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+    def test_small_project_not_flagged(self):
+        # All-Opus but <50 turns — below threshold for actionable signal.
+        for i in range(20):
+            self._seed_assistant(uuid=f"o{i}", project="tiny-proj",
+                                 model="claude-opus-4-7")
+        tips = opus_only_workspace_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class McpSprawlTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def _seed_mcp(self, server: str, tool: str = "tool"):
+        with connect(self.db) as c:
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, timestamp, is_error) VALUES "
+                "(?, 's', 'p', ?, 'target', '2026-05-15T00:00:00Z', 0)",
+                (f"m-{server}-{tool}", f"mcp__{server}__{tool}"),
+            )
+            c.commit()
+
+    def test_many_servers_flagged(self):
+        for i in range(15):
+            self._seed_mcp(f"server{i}")
+        tips = mcp_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertIn("15 MCP servers", tips[0]["title"])
+
+    def test_few_servers_not_flagged(self):
+        for i in range(5):
+            self._seed_mcp(f"server{i}")
+        tips = mcp_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class ClaudeMdStackTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = str(self.tmp / "t.db")
+        init_db(self.db)
+
+    def _seed_cwd(self, cwd: str):
+        with connect(self.db) as c:
+            for i in range(10):
+                c.execute(
+                    "INSERT INTO messages (uuid, session_id, project_slug, type, "
+                    "timestamp, cwd) VALUES (?, 's', 'p', 'user', "
+                    "'2026-05-15T00:00:00Z', ?)",
+                    (f"u{i}", cwd),
+                )
+            c.commit()
+
+    def test_three_stacked_claude_mds_flagged(self):
+        root = self.tmp / "root"
+        proj = root / "proj"
+        nested = proj / "sub"
+        nested.mkdir(parents=True)
+        (root / "CLAUDE.md").write_text("# global\n" + ("line\n" * 150), encoding="utf-8")
+        (proj / "CLAUDE.md").write_text("# project\n" + ("line\n" * 150), encoding="utf-8")
+        (nested / "CLAUDE.md").write_text("# nested\n" + ("line\n" * 150), encoding="utf-8")
+        self._seed_cwd(str(nested))
+        tips = claude_md_stack_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertEqual(tips[0]["category"], "claude-md-stack")
+
+    def test_single_claude_md_not_flagged(self):
+        proj = self.tmp / "solo"
+        proj.mkdir()
+        (proj / "CLAUDE.md").write_text("# solo\n" + ("line\n" * 200), encoding="utf-8")
+        self._seed_cwd(str(proj))
+        tips = claude_md_stack_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class LongSkillDescriptionsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = str(self.tmp / "t.db")
+        init_db(self.db)
+        self.skills_root = self.tmp / "fake_home" / ".claude"
+        self.skills_root.mkdir(parents=True)
+
+    def _patch_roots(self):
+        from token_dashboard import skills as s
+        return mock.patch.object(s, "_DEFAULT_ROOTS",
+                                 [self.skills_root / "skills"]), s
+
+    def test_three_long_descriptions_flagged(self):
+        for i in range(3):
+            _make_skill(self.skills_root, f"verbose{i}", "x" * 500)
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = long_skill_descriptions_tips(
+                self.db, today_iso="2026-05-16T00:00:00"
+            )
+        self.assertTrue(tips)
+        _assert_tip_shape(self, tips[0])
+        self.assertEqual(tips[0]["category"], "long-skill-descriptions")
+        self.assertIn("verbose0", tips[0]["body"])
+
+    def test_short_descriptions_not_flagged(self):
+        for i in range(5):
+            _make_skill(self.skills_root, f"terse{i}", "short")
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = long_skill_descriptions_tips(
+                self.db, today_iso="2026-05-16T00:00:00"
+            )
+        self.assertEqual(tips, [])
 
 
 if __name__ == "__main__":

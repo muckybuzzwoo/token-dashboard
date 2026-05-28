@@ -506,6 +506,419 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     return out
 
 
+# ── New tip: session approached the context window limit ────────────────────
+
+# Sessions that accumulate a lot of NEW content per turn (input + cache_create,
+# excluding cache_read which is multi-counted across breakpoints) are heavy
+# regardless of the model's window size. 100k of net-new content in a single
+# turn is a strong signal of a context-heavy session.
+_CONTEXT_PRESSURE_PEAK_NEW = 100_000
+
+
+def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag sessions that accreted heavy new content per turn.
+
+    We measure ``input_tokens + cache_create_5m_tokens + cache_create_1h_tokens``
+    — the net-new tokens added to the session's prompt for that turn. We
+    deliberately do NOT include ``cache_read_tokens`` because Anthropic
+    multi-counts cache reads across breakpoints (a single turn can report
+    cache_read > model context window), making it a poor "context usage" proxy.
+
+    Net-new per turn is conservative but trustworthy: at >100k tokens of new
+    content in a single turn, the prompt is heavy in absolute terms.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 7)
+    sql = """
+      SELECT session_id,
+             MAX(input_tokens + cache_create_5m_tokens
+                 + cache_create_1h_tokens) AS peak_new
+        FROM messages
+       WHERE type='assistant' AND timestamp >= ?
+       GROUP BY session_id
+       HAVING peak_new >= ?
+       ORDER BY peak_new DESC
+       LIMIT 3
+    """
+    out = []
+    with connect(db_path) as c:
+        for row in c.execute(sql, (since, _CONTEXT_PRESSURE_PEAK_NEW)):
+            sid = row["session_id"]
+            key = _key("context-pressure", sid)
+            if _is_dismissed(db_path, key):
+                continue
+            peak = int(row["peak_new"] or 0)
+            out.append(_make_tip(
+                key=key, category="context-pressure", severity="info",
+                title=f"Session {sid[:8]}… added {peak:,} new tokens in a single turn",
+                body=(f"Peak net-new tokens in one assistant turn: {peak:,} "
+                      "(uncached input + freshly cached content). High values "
+                      "indicate a session that's accreting context fast — "
+                      "consider `/clear` between unrelated tasks or splitting "
+                      "long work across sessions."),
+                scope=sid,
+                links=[
+                    _session_link(sid, "Open session"),
+                    _doc_link("Anthropic: manage context",
+                              "https://code.claude.com/docs/en/costs"),
+                ],
+            ))
+    return out
+
+
+# ── New tip: repeated identical Bash errors ──────────────────────────────────
+
+def repeated_bash_errors_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag Bash commands that errored ≥3 times with identical command text.
+
+    Repeated identical failures are usually a sign the agent retried instead
+    of investigating the root cause — Anthropic's "root cause discipline" line
+    from the system prompt. Uses the tool_use_id join introduced for the
+    bash-bloat tip.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 3)  # short window: this is an active-debug signal
+    sql = """
+      SELECT bash.target          AS cmd,
+             COUNT(*)             AS n,
+             MAX(bash.session_id) AS sample_session
+        FROM tool_calls bash
+        JOIN tool_calls tr
+          ON tr.tool_use_id = bash.tool_use_id
+         AND tr.session_id  = bash.session_id
+         AND tr.tool_name   = '_tool_result'
+       WHERE bash.tool_name = 'Bash'
+         AND bash.tool_use_id IS NOT NULL
+         AND bash.target IS NOT NULL
+         AND tr.is_error = 1
+         AND bash.timestamp >= ?
+       GROUP BY bash.target
+       HAVING n >= 3
+       ORDER BY n DESC
+       LIMIT 5
+    """
+    out = []
+    with connect(db_path) as c:
+        for row in c.execute(sql, (since,)):
+            cmd = row["cmd"]
+            key = _key("bash-errors", (cmd or "")[:120])
+            if _is_dismissed(db_path, key):
+                continue
+            display = (cmd[:80] + "…") if len(cmd) > 80 else cmd
+            out.append(_make_tip(
+                key=key, category="bash-errors", severity="info",
+                title=f"`{display}` failed {row['n']} times",
+                body=("This Bash command produced an error result more than "
+                      f"{row['n']} times in the past 3 days. Repeated identical "
+                      "failures usually mean the underlying cause isn't being "
+                      "investigated. Check the error message in the latest "
+                      "session and address the root cause rather than retrying."),
+                scope=cmd[:200],
+                links=[_session_link(row["sample_session"], "Latest occurrence")],
+            ))
+    return out
+
+
+# ── New tip: high web-fetch volume ───────────────────────────────────────────
+
+# Generic detection: any tool whose name suggests fetching web content.
+# Covers Anthropic's WebFetch and the most common MCP web fetchers (Jina,
+# Firecrawl, browser-* MCPs). The match is by-name so no specific tool brand
+# is hard-coded.
+_WEB_FETCH_TOOL_RE = re.compile(
+    r"""(?:
+        ^WebFetch$
+      | ^mcp__[^_]+__(?:.*(?:fetch|read_url|scrape|crawl|browser_navigate|browser_take_screenshot).*)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _is_web_fetch_tool(name: Optional[str]) -> bool:
+    return bool(name and _WEB_FETCH_TOOL_RE.match(name))
+
+
+def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag sessions with very high web-fetch volume.
+
+    Each fetch round-trips a (potentially huge) page through tool_result, which
+    is expensive in context. >15 fetches in one session suggests either:
+    cacheable references that could go into CLAUDE.md or a memory entry, OR
+    a tool with no result-trimming.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 7)
+    out = []
+    with connect(db_path) as c:
+        # Pull all per-session tool_name counts, then filter in Python so the
+        # regex stays in one place.
+        rows = c.execute(
+            """SELECT session_id, tool_name, COUNT(*) AS n
+                 FROM tool_calls
+                WHERE tool_name = 'WebFetch'
+                   OR tool_name LIKE 'mcp__%'
+                  AND timestamp >= ?
+                GROUP BY session_id, tool_name""",
+            (since,),
+        ).fetchall()
+
+    by_session: dict[str, int] = {}
+    for row in rows:
+        if _is_web_fetch_tool(row["tool_name"]):
+            by_session[row["session_id"]] = by_session.get(row["session_id"], 0) + row["n"]
+
+    for sid, n in sorted(by_session.items(), key=lambda kv: -kv[1])[:5]:
+        if n < 15:
+            continue
+        key = _key("web-fetch-volume", sid)
+        if _is_dismissed(db_path, key):
+            continue
+        out.append(_make_tip(
+            key=key, category="web-fetch-volume", severity="info",
+            title=f"Session {sid[:8]}… made {n} web-fetch calls",
+            body=(f"Heavy web-fetch use in one session ({n} calls in 7 days). "
+                  "Each call inflates context with the fetched page. If the "
+                  "same URLs come back repeatedly, summarize them once into "
+                  "CLAUDE.md or a memory entry instead. If a single page is "
+                  "huge, ask for a narrower selector."),
+            scope=sid,
+            links=[
+                _session_link(sid, "Open session"),
+                _doc_link("Anthropic: manage costs",
+                          "https://code.claude.com/docs/en/costs"),
+            ],
+        ))
+    return out
+
+
+# ── New tip: Opus-only workspaces ────────────────────────────────────────────
+
+def opus_only_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag projects where >90% of assistant turns ran on Opus.
+
+    Opus is the most expensive tier (~5x Sonnet); routine work that doesn't
+    need top-of-line reasoning (file reads, refactors, scaffolding) is
+    cheaper on Sonnet or Haiku.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 14)
+    sql = """
+      SELECT project_slug,
+             COUNT(*) AS total,
+             SUM(CASE WHEN lower(model) LIKE '%opus%' THEN 1 ELSE 0 END) AS opus_n
+        FROM messages
+       WHERE type='assistant' AND model IS NOT NULL AND timestamp >= ?
+       GROUP BY project_slug
+       HAVING total >= 50 AND opus_n * 1.0 / total > 0.9
+       ORDER BY total DESC
+       LIMIT 3
+    """
+    out = []
+    with connect(db_path) as c:
+        for row in c.execute(sql, (since,)):
+            project = row["project_slug"]
+            key = _key("opus-only", project)
+            if _is_dismissed(db_path, key):
+                continue
+            pct = (row["opus_n"] or 0) * 100 // (row["total"] or 1)
+            out.append(_make_tip(
+                key=key, category="opus-only", severity="cost",
+                title=f"{project}: {pct}% of turns on Opus",
+                body=(f"{row['opus_n']:,} of {row['total']:,} assistant turns in "
+                      f"the past 14 days ran on Opus. For routine work (file "
+                      "reads, refactors, scaffolding), Sonnet is ~5x cheaper at "
+                      "comparable quality. Reserve Opus for hard reasoning."),
+                scope=project,
+                links=[
+                    _doc_link("Anthropic: choose the right model",
+                              "https://code.claude.com/docs/en/costs"),
+                ],
+            ))
+    return out
+
+
+# ── New tip: MCP server sprawl ───────────────────────────────────────────────
+
+_MCP_SPRAWL_THRESHOLD = 12
+
+
+def mcp_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag when many distinct MCP servers are active in 7 days.
+
+    Each connected MCP server costs context on every turn (its tool schemas
+    are listed for Claude). Anthropic recommends disabling MCPs you don't
+    actively use.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 7)
+    out = []
+    servers: set[str] = set()
+    with connect(db_path) as c:
+        for row in c.execute(
+            """SELECT DISTINCT tool_name FROM tool_calls
+                WHERE tool_name LIKE 'mcp__%' AND timestamp >= ?""",
+            (since,),
+        ):
+            name = row["tool_name"] or ""
+            # tool_name shape: mcp__<server>__<tool>
+            after = name[5:]
+            sep = after.find("__")
+            server = after[:sep] if sep > 0 else after
+            if server:
+                servers.add(server)
+
+    if len(servers) < _MCP_SPRAWL_THRESHOLD:
+        return out
+
+    key = _key("mcp-sprawl", "overall")
+    if _is_dismissed(db_path, key):
+        return out
+
+    sample = ", ".join(sorted(servers)[:10])
+    if len(servers) > 10:
+        sample += f", and {len(servers) - 10} more"
+    out.append(_make_tip(
+        key=key, category="mcp-sprawl", severity="info",
+        title=f"{len(servers)} MCP servers active in the past 7 days",
+        body=(f"Each connected MCP server adds its tool schemas to every turn. "
+              "Disable servers you don't actively use (settings.json or your "
+              f"client's MCP config). Active servers: {sample}."),
+        scope="overall",
+        links=[
+            _doc_link("Anthropic: MCP overhead",
+                      "https://code.claude.com/docs/en/mcp"),
+        ],
+    ))
+    return out
+
+
+# ── New tip: CLAUDE.md stack (multiple files in one ancestry) ────────────────
+
+_CLAUDE_MD_STACK_MIN_COUNT = 3
+_CLAUDE_MD_STACK_MAX_TOTAL_LINES = 400
+
+
+def claude_md_stack_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag when a cwd has 3+ CLAUDE.md files in its ancestry totalling >400 lines.
+
+    Sister tip to `claude_md_size_tips`: that one flags an individual file as
+    too big; this one flags the *stack* (global + project + nested). Each
+    layer adds context to every turn even when individually within limits.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 30)
+
+    out = []
+    seen_combos: set[tuple] = set()
+    for cwd in _distinct_active_cwds(db_path, since):
+        if not cwd:
+            continue
+        try:
+            cwd_path = Path(cwd)
+        except (TypeError, ValueError):
+            continue
+        stack: list[tuple[str, int]] = []
+        for ancestor in (cwd_path, *list(cwd_path.parents)[:5]):
+            candidate = ancestor / "CLAUDE.md"
+            try:
+                if not candidate.is_file():
+                    continue
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            lines = text.count("\n") + (0 if text.endswith("\n") else 1)
+            stack.append((str(candidate), lines))
+        if len(stack) < _CLAUDE_MD_STACK_MIN_COUNT:
+            continue
+        total_lines = sum(n for _, n in stack)
+        if total_lines < _CLAUDE_MD_STACK_MAX_TOTAL_LINES:
+            continue
+        combo = tuple(p for p, _ in stack)
+        if combo in seen_combos:
+            continue
+        seen_combos.add(combo)
+        scope = "|".join(combo)
+        key = _key("claude-md-stack", scope)
+        if _is_dismissed(db_path, key):
+            continue
+        files_desc = ", ".join(
+            f"{Path(p).parent.name or Path(p).anchor}/CLAUDE.md ({n}l)"
+            for p, n in stack
+        )
+        out.append(_make_tip(
+            key=key, category="claude-md-stack", severity="info",
+            title=f"{len(stack)} CLAUDE.md files stack to {total_lines} lines",
+            body=(f"Working in `{cwd_path.name}`, the agent reads "
+                  f"{len(stack)} CLAUDE.md files every turn — combined "
+                  f"{total_lines} lines. Stack: {files_desc}. Consider "
+                  "consolidating overlapping guidance into a single layer."),
+            scope=scope,
+            links=[
+                _doc_link("Anthropic: manage costs (CLAUDE.md size)",
+                          "https://code.claude.com/docs/en/costs"),
+            ],
+        ))
+    return out
+
+
+# ── New tip: skills with overlong descriptions ───────────────────────────────
+
+_SKILL_DESC_MAX_CHARS = 400
+_SKILL_DESC_MIN_OFFENDERS = 3
+
+
+def long_skill_descriptions_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag installed skills whose `description:` exceeds Anthropic's recommended length.
+
+    Companion to `skill_listing_budget_tips`: that one flags total footprint;
+    this one names the biggest individual offenders, useful when the user owns
+    the skill and can shorten it.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    from .skills import cached_catalog
+    catalog = cached_catalog(db_path)
+    if not catalog:
+        return []
+
+    per_path: dict[str, list[str]] = {}
+    for slug, info in catalog.items():
+        per_path.setdefault(info["path"], []).append(slug)
+
+    long_ones: list[tuple[int, str]] = []
+    for path, slugs in per_path.items():
+        desc_len = len(_read_skill_description(path))
+        if desc_len > _SKILL_DESC_MAX_CHARS:
+            plugin_form = sorted(s for s in slugs if ":" in s)
+            display = plugin_form[0] if plugin_form else sorted(slugs)[0]
+            long_ones.append((desc_len, display))
+
+    if len(long_ones) < _SKILL_DESC_MIN_OFFENDERS:
+        return []
+
+    key = _key("long-skill-descriptions", "overall")
+    if _is_dismissed(db_path, key):
+        return []
+
+    long_ones.sort(reverse=True)
+    sample_lines = [
+        f"{display} ({chars} chars)" for chars, display in long_ones[:5]
+    ]
+    extra = "" if len(long_ones) <= 5 else f" and {len(long_ones) - 5} more"
+    return [_make_tip(
+        key=key, category="long-skill-descriptions", severity="info",
+        title=f"{len(long_ones)} skill descriptions exceed {_SKILL_DESC_MAX_CHARS} chars",
+        body=(f"Anthropic recommends concise skill descriptions (≤{_SKILL_DESC_MAX_CHARS} "
+              "chars) so the listing fits inside the budget. Longest: "
+              + "; ".join(sample_lines) + extra + "."),
+        scope="overall",
+        links=[
+            {"label": "Open Skills tab", "href": "#/skills"},
+            _doc_link("Anthropic: skills authoring",
+                      "https://code.claude.com/docs/en/skills"),
+        ],
+    )]
+
+
 # ── New tip: Bash commands producing bloat without an output limiter ─────────
 
 # Output-limiter patterns recognised across shells. The list aims to be a
@@ -744,6 +1157,8 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
                 links=[
                     _session_link(sid, "Open session"),
                     {"label": "Subagents view", "href": "#/subagents"},
+                    _doc_link("Anthropic: manage costs",
+                              "https://code.claude.com/docs/en/costs"),
                 ],
             ))
     return out
@@ -761,4 +1176,11 @@ def all_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         *dead_skills_tips(db_path, today_iso),
         *subagent_sprawl_tips(db_path, today_iso),
         *bash_bloat_tips(db_path, today_iso),
+        *context_pressure_tips(db_path, today_iso),
+        *repeated_bash_errors_tips(db_path, today_iso),
+        *web_fetch_volume_tips(db_path, today_iso),
+        *opus_only_workspace_tips(db_path, today_iso),
+        *mcp_sprawl_tips(db_path, today_iso),
+        *claude_md_stack_tips(db_path, today_iso),
+        *long_skill_descriptions_tips(db_path, today_iso),
     ]
