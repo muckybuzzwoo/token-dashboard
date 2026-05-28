@@ -211,13 +211,15 @@ class DismissTests(unittest.TestCase):
         self.assertFalse(tips_after)
 
 
-def _make_skill(root: Path, name: str, description: str, body: str = "Body text.\n") -> Path:
+def _make_skill(root: Path, name: str, description: str, body: str = "Body text.\n",
+                extra_frontmatter: str = "") -> Path:
     """Write a SKILL.md with frontmatter under root/skills/<name>/SKILL.md."""
     d = root / "skills" / name
     d.mkdir(parents=True, exist_ok=True)
     md = d / "SKILL.md"
+    extra = f"\n{extra_frontmatter}" if extra_frontmatter else ""
     md.write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}",
+        f"---\nname: {name}\ndescription: {description}{extra}\n---\n\n{body}",
         encoding="utf-8",
     )
     return md
@@ -232,10 +234,11 @@ class SkillListingBudgetTests(unittest.TestCase):
         self.skills_root.mkdir(parents=True)
 
     def _patch_roots(self):
-        # cached_catalog reads module-level _DEFAULT_ROOTS; patch + reset cache.
+        # cached_catalog reads active roots through default_roots(); patch + reset cache.
         from token_dashboard import skills as s
-        return mock.patch.object(s, "_DEFAULT_ROOTS",
-                                 [self.skills_root / "skills"]), s
+        return mock.patch.object(
+            s, "default_roots", return_value=[self.skills_root / "skills"]
+        ), s
 
     def test_under_budget_no_tip(self):
         _make_skill(self.skills_root, "tiny", "short desc")
@@ -263,6 +266,41 @@ class SkillListingBudgetTests(unittest.TestCase):
         self.assertEqual(t["severity"], "warning")
         hrefs = [l["href"] for l in t["links"]]
         self.assertIn("#/skills", hrefs)
+
+    def test_user_invocable_only_skill_description_does_not_count(self):
+        long_desc = "x" * 300
+        _make_skill(self.skills_root, "visible", long_desc)
+        _make_skill(self.skills_root, "manual", long_desc)
+        settings = self.tmp / "settings.json"
+        settings.write_text(
+            '{"skillOverrides": {"manual": "user-invocable-only"}}',
+            encoding="utf-8",
+        )
+        patch_ctx, s = self._patch_roots()
+        from token_dashboard import tips as tips_mod
+        with patch_ctx, mock.patch.object(tips_mod, "_USER_SETTINGS_PATH", settings):
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = skill_listing_budget_tips(
+                self.db, today_iso="2026-04-19T00:00:00", budget_chars=500,
+            )
+        self.assertEqual(tips, [])
+
+    def test_disable_model_invocation_skill_description_does_not_count(self):
+        long_desc = "x" * 300
+        _make_skill(self.skills_root, "visible", long_desc)
+        _make_skill(
+            self.skills_root,
+            "manual",
+            long_desc,
+            extra_frontmatter="disable-model-invocation: true",
+        )
+        patch_ctx, s = self._patch_roots()
+        with patch_ctx:
+            s._cache = {"at": 0.0, "data": {}, "key": None}
+            tips = skill_listing_budget_tips(
+                self.db, today_iso="2026-04-19T00:00:00", budget_chars=500,
+            )
+        self.assertEqual(tips, [])
 
 
 class ClaudeMdSizeTests(unittest.TestCase):

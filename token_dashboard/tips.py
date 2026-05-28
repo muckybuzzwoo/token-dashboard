@@ -14,6 +14,7 @@ Tip dict shape:
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime, timedelta
@@ -293,18 +294,80 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _DESC_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
+_DISABLE_MODEL_RE = re.compile(
+    r"^disable-model-invocation:\s*(true|yes|1)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DESCRIPTION_HIDDEN_OVERRIDES = {"user-invocable-only", "name-only", "off"}
+_USER_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
-def _read_skill_description(path: str) -> str:
-    """Return the `description:` value from a SKILL.md frontmatter, or empty string."""
+def _read_skill_frontmatter(path: str) -> str:
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
     m = _FRONTMATTER_RE.match(text)
-    block = m.group(1) if m else text[:2000]
+    return m.group(1) if m else text[:2000]
+
+
+def _read_skill_description(path: str) -> str:
+    """Return the `description:` value from a SKILL.md frontmatter, or empty string."""
+    block = _read_skill_frontmatter(path)
     d = _DESC_RE.search(block)
     return (d.group(1).strip() if d else "")
+
+
+def _skill_disables_model_invocation(path: str) -> bool:
+    return bool(_DISABLE_MODEL_RE.search(_read_skill_frontmatter(path)))
+
+
+def _read_skill_overrides(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    overrides = data.get("skillOverrides")
+    if not isinstance(overrides, dict):
+        return {}
+    return {str(k): str(v) for k, v in overrides.items()}
+
+
+def _settings_paths_from_db(db_path) -> list[Path]:
+    paths: set[Path] = set()
+    with connect(db_path) as c:
+        cwds = [r[0] for r in c.execute(
+            "SELECT DISTINCT cwd FROM messages WHERE cwd IS NOT NULL"
+        )]
+    for cwd in cwds:
+        if not cwd:
+            continue
+        p = Path(cwd)
+        for ancestor in (p, *p.parents):
+            settings = ancestor / ".claude" / "settings.local.json"
+            if settings.is_file():
+                paths.add(settings)
+                break
+    return sorted(paths)
+
+
+def _skill_overrides(db_path) -> dict[str, str]:
+    """Return merged global + project skillOverrides.
+
+    Project settings win over global settings for the same slug.
+    """
+    merged = _read_skill_overrides(_USER_SETTINGS_PATH)
+    for path in _settings_paths_from_db(db_path):
+        merged.update(_read_skill_overrides(path))
+    return merged
+
+
+def _description_visible(slugs: set[str], overrides: dict[str, str]) -> bool:
+    for slug in slugs:
+        mode = overrides.get(slug)
+        if mode in _DESCRIPTION_HIDDEN_OVERRIDES:
+            return False
+    return True
 
 
 # Default context-window-1%-equivalent in characters.
@@ -331,9 +394,17 @@ def skill_listing_budget_tips(db_path, today_iso: Optional[str] = None,
 
     # Aggregate per slug. A SKILL.md may register multiple slugs (bare + plugin:bare).
     # Dedup by path so we count each file's description once.
+    path_slugs: dict[str, set[str]] = {}
+    for slug, info in catalog.items():
+        path_slugs.setdefault(info["path"], set()).add(slug)
+
+    overrides = _skill_overrides(db_path)
     seen_paths: dict[str, int] = {}
-    for info in catalog.values():
-        seen_paths[info["path"]] = len(_read_skill_description(info["path"]))
+    for path, slugs in path_slugs.items():
+        if _skill_disables_model_invocation(path) or not _description_visible(slugs, overrides):
+            seen_paths[path] = 0
+        else:
+            seen_paths[path] = len(_read_skill_description(path))
     total_chars = sum(seen_paths.values())
     if total_chars <= budget_chars:
         return []
@@ -351,7 +422,10 @@ def skill_listing_budget_tips(db_path, today_iso: Optional[str] = None,
     # Rank skills by least-used × largest description; those are the cheapest to drop.
     ranked = []
     for slug, info in catalog.items():
-        ranked.append((used.get(slug, 0), -len(_read_skill_description(info["path"])), slug))
+        desc_len = seen_paths.get(info["path"], 0)
+        if desc_len <= 0:
+            continue
+        ranked.append((used.get(slug, 0), -desc_len, slug))
     ranked.sort()
     worst = [slug for _, _, slug in ranked[:5]]
 

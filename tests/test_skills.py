@@ -1,10 +1,13 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from token_dashboard.skills import (
     scan_catalog,
+    default_roots,
     _slugs_for,
     _project_skill_roots_from_cwds,
     cached_catalog,
@@ -55,9 +58,9 @@ class CatalogTests(unittest.TestCase):
     def test_slugs_for_plugin_path(self):
         p = Path("plugins/marketplaces/x/plugins/superpowers/skills/brainstorming/SKILL.md")
         slugs = set(_slugs_for(p))
-        # Both forms must be present; extra ancestor aliases (e.g. marketplace name) are harmless.
         self.assertIn("brainstorming", slugs)
         self.assertIn("superpowers:brainstorming", slugs)
+        self.assertNotIn("x:brainstorming", slugs)
 
     def test_slugs_for_cache_versioned_path(self):
         p = Path("plugins/cache/claude-plugins-official/superpowers/5.0.7/skills/brainstorming/SKILL.md")
@@ -66,6 +69,11 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("superpowers:brainstorming", slugs)
         # version segment must NOT become a slug prefix
         self.assertNotIn("5.0.7:brainstorming", slugs)
+
+    def test_slugs_for_absolute_path_do_not_use_user_dirs(self):
+        p = Path("/Users/alice/.claude/plugins/marketplaces/official/plugins/superpowers/skills/brainstorming/SKILL.md")
+        slugs = set(_slugs_for(p))
+        self.assertEqual(slugs, {"brainstorming", "superpowers:brainstorming"})
 
     def test_slugs_for_user_skill(self):
         p = Path(".claude/skills/frontend-design/SKILL.md")
@@ -81,6 +89,18 @@ class CatalogTests(unittest.TestCase):
         cat = scan_catalog([self.tmp / "proj" / ".claude" / "skills"])
         self.assertIn("my-skill", cat)
         self.assertEqual(cat["my-skill"]["tokens"], 100)
+
+    def test_scan_catalog_follows_symlinked_skill_directories(self):
+        source = self.tmp / "shared-skill-library" / "lint-helper"
+        _write(source / "SKILL.md", "t" * 400)
+        project_skills = self.tmp / "repo" / ".claude" / "skills"
+        project_skills.mkdir(parents=True)
+        os.symlink(source, project_skills / "lint-helper")
+
+        cat = scan_catalog([project_skills])
+
+        self.assertIn("lint-helper", cat)
+        self.assertEqual(cat["lint-helper"]["tokens"], 100)
 
     def test_project_skill_roots_innermost_wins(self):
         outer = self.tmp / "outer" / ".claude" / "skills"
@@ -123,6 +143,36 @@ class CatalogTests(unittest.TestCase):
         cat = cached_catalog(db_path)
         self.assertIn("repo-skill", cat)
         self.assertEqual(cat["repo-skill"]["tokens"], 100)
+
+    def test_default_roots_use_enabled_installed_plugin_skills(self):
+        cache = self.tmp / "cache"
+        enabled_install = cache / "market" / "enabled-plugin" / "1.0.0"
+        disabled_install = cache / "market" / "disabled-plugin" / "1.0.0"
+        (enabled_install / "skills").mkdir(parents=True)
+        (disabled_install / "skills").mkdir(parents=True)
+        installed = self.tmp / "installed_plugins.json"
+        settings = self.tmp / "settings.json"
+        installed.write_text(json.dumps({
+            "plugins": {
+                "enabled-plugin@market": [{"installPath": str(enabled_install)}],
+                "disabled-plugin@market": [{"installPath": str(disabled_install)}],
+            }
+        }), encoding="utf-8")
+        settings.write_text(json.dumps({
+            "enabledPlugins": {
+                "enabled-plugin@market": True,
+                "disabled-plugin@market": False,
+            }
+        }), encoding="utf-8")
+
+        from token_dashboard import skills as s
+        with mock.patch.object(s, "_PERSONAL_ROOTS", []), \
+             mock.patch.object(s, "_PLUGIN_CACHE_ROOT", cache), \
+             mock.patch.object(s, "_INSTALLED_PLUGINS_PATH", installed), \
+             mock.patch.object(s, "_USER_SETTINGS_PATH", settings):
+            roots = default_roots()
+
+        self.assertEqual(roots, [enabled_install / "skills"])
 
 
 if __name__ == "__main__":
