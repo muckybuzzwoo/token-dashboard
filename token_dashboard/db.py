@@ -65,12 +65,14 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   target        TEXT,
   result_tokens INTEGER,
   is_error      INTEGER NOT NULL DEFAULT 0,
-  timestamp     TEXT    NOT NULL
+  timestamp     TEXT    NOT NULL,
+  tool_use_id   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tools_name    ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tools_target  ON tool_calls(target);
 CREATE INDEX IF NOT EXISTS idx_tools_timestamp_name ON tool_calls(timestamp, tool_name);
+CREATE INDEX IF NOT EXISTS idx_tools_use_id  ON tool_calls(tool_use_id);
 
 CREATE TABLE IF NOT EXISTS plan (
   k TEXT PRIMARY KEY,
@@ -168,6 +170,7 @@ def init_db(path: Union[str, Path]) -> None:
         c.execute("PRAGMA journal_mode=WAL")
         _migrate_add_message_id(c)
         _migrate_add_attribution_skill(c)
+        _migrate_add_tool_use_id(c)
         c.executescript(SCHEMA)
 
 
@@ -224,6 +227,39 @@ def _migrate_add_attribution_skill(conn) -> None:
     # Force a full summary rebuild on the next scan: clearing summary_meta
     # makes summaries_ready() return False, which triggers rebuild_summaries()
     # without arguments (full pass) instead of an incremental delta.
+    has_summary_meta = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_meta'"
+    ).fetchone()
+    if has_summary_meta:
+        conn.execute("DELETE FROM summary_meta")
+    conn.commit()
+
+
+def _migrate_add_tool_use_id(conn) -> None:
+    """Add tool_calls.tool_use_id linking tool_use blocks to their _tool_result rows.
+
+    Why: tool_calls stores the original tool's argument in `target` (e.g. the
+    Bash command), while the corresponding _tool_result row stores the
+    `tool_use_id` in `target`. There was no direct join between the two, so
+    `result_tokens` could not be attributed back to the command that produced
+    it. This blocks Bash-bloat-by-command detection.
+
+    How to apply: if the old table exists without the column, add it and clear
+    messages/tool_calls/files so the next scan replays JSONLs with the new
+    field populated. Source of truth is on disk; rescanning is cheap.
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tool_calls'"
+    ).fetchone()
+    if not has_table:
+        return
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+    if "tool_use_id" in cols:
+        return
+    conn.execute("ALTER TABLE tool_calls ADD COLUMN tool_use_id TEXT")
+    conn.execute("DELETE FROM messages")
+    conn.execute("DELETE FROM tool_calls")
+    conn.execute("DELETE FROM files")
     has_summary_meta = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='summary_meta'"
     ).fetchone()

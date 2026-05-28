@@ -42,6 +42,39 @@ class ToolExtractionTests(unittest.TestCase):
         self.assertEqual(parsed[0]["name"], "Read")
         self.assertEqual(parsed[1]["target"], "npm run lint")
 
+    def test_tool_use_id_populated_on_tool_use(self):
+        """The `id` from each tool_use block must be stored on the tool_call so
+        result_tokens can be joined back to the originating command."""
+        rec = {
+            "type": "assistant", "uuid": "u", "sessionId": "s", "timestamp": "t",
+            "message": {
+                "model": "claude-opus-4-7",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "content": [
+                    {"type": "tool_use", "id": "toolu_abc", "name": "Bash",
+                     "input": {"command": "find / -name foo"}},
+                ],
+            },
+        }
+        _, tools = parse_record(rec, project_slug="p")
+        self.assertEqual(tools[0]["tool_use_id"], "toolu_abc")
+
+    def test_tool_result_carries_tool_use_id(self):
+        """The matching _tool_result row must also expose the tool_use_id so a
+        join with the original tool_use row is possible."""
+        rec = {
+            "type": "user", "uuid": "u2", "sessionId": "s",
+            "timestamp": "t", "isSidechain": False,
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_xyz",
+                 "content": "x" * 4000, "is_error": False}
+            ]},
+        }
+        _, tools = parse_record(rec, project_slug="p")
+        self.assertEqual(tools[0]["tool_name"], "_tool_result")
+        self.assertEqual(tools[0]["tool_use_id"], "toolu_xyz")
+        self.assertEqual(tools[0]["target"], "toolu_xyz")
+
     def test_agent_and_task_both_populate_target(self):
         """Claude Code renamed Task → Agent; both must resolve subagent_type as target."""
         rec = {

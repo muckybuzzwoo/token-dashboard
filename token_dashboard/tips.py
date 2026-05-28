@@ -506,6 +506,109 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     return out
 
 
+# ── New tip: Bash commands producing bloat without an output limiter ─────────
+
+# Output-limiter patterns recognised across shells. The list aims to be a
+# conservative *true-positive* indicator — i.e. when these patterns are
+# present, we trust the user is already controlling output. False negatives
+# (real limiters we don't recognise) just produce a noisier tip; false
+# positives (matching strings inside a different context) only suppress a tip.
+_LIMITER_RE = re.compile(
+    r"""(?:
+        \|\s*head\b
+      | \|\s*tail\b
+      | \|\s*less\b
+      | \|\s*more\b
+      | \|\s*wc\s+-l\b
+      | \bgrep\s+-c\b
+      | \buniq\s+-c\b
+      | \bsort\s+-u\b
+      | \bhead\s+-n?\s*\d
+      | \btail\s+-n?\s*\d
+      | \b--max-results\b
+      | \b--max-count\s*=?\s*\d
+      | \b-m\s*\d
+      | Select-Object\s+-First\b
+      | Select-Object\s+-Last\b
+      | -TotalCount\b
+      | -First\s+\d
+      | -Tail\s+\d
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _has_output_limiter(cmd: str) -> bool:
+    return bool(_LIMITER_RE.search(cmd or ""))
+
+
+def bash_bloat_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
+    """Flag Bash commands that repeatedly produce >5k-token outputs without an
+    output limiter.
+
+    Joins each `Bash` tool_use row to its corresponding `_tool_result` row via
+    `tool_use_id` (added in the same release as this tip). Groups by the
+    command string, and emits the top offenders that have no `head`,
+    `Select-Object -First`, etc. in the command text.
+    """
+    today_iso = today_iso or datetime.utcnow().isoformat()
+    since = _iso_days_ago(today_iso, 7)
+    sql = """
+      SELECT bash.target            AS cmd,
+             COUNT(*)               AS n,
+             AVG(tr.result_tokens)  AS avg_t,
+             MAX(tr.result_tokens)  AS max_t,
+             MAX(bash.session_id)   AS sample_session
+        FROM tool_calls bash
+        JOIN tool_calls tr
+          ON tr.tool_use_id = bash.tool_use_id
+         AND tr.session_id  = bash.session_id
+         AND tr.tool_name   = '_tool_result'
+       WHERE bash.tool_name = 'Bash'
+         AND bash.tool_use_id IS NOT NULL
+         AND bash.target IS NOT NULL
+         AND bash.timestamp >= ?
+         AND tr.result_tokens > 5000
+       GROUP BY bash.target
+       HAVING n >= 2 AND avg_t > 5000
+       ORDER BY avg_t * n DESC
+       LIMIT 10
+    """
+    out: List[dict] = []
+    with connect(db_path) as c:
+        rows = list(c.execute(sql, (since,)))
+
+    # Filter to commands without an apparent output limiter — those are the
+    # actionable ones (user can fix the next invocation by piping to head etc.).
+    for row in rows:
+        cmd = row["cmd"]
+        if _has_output_limiter(cmd):
+            continue
+        if len(out) >= 5:
+            break
+        key = _key("bash-bloat", (cmd or "")[:120])
+        if _is_dismissed(db_path, key):
+            continue
+        avg_t = int(row["avg_t"] or 0)
+        max_t = int(row["max_t"] or 0)
+        display = (cmd[:80] + "…") if len(cmd) > 80 else cmd
+        out.append(_make_tip(
+            key=key, category="bash-bloat", severity="info",
+            title=f"`{display}` averages {avg_t:,} tokens of output",
+            body=(f"Ran {row['n']} times in the past 7 days, avg result "
+                  f"{avg_t:,} tokens (max {max_t:,}). Piping the output through "
+                  "`head`, `tail`, or `Select-Object -First` (PowerShell) would "
+                  "shrink the result Claude has to read back."),
+            scope=cmd[:200],
+            links=[
+                _session_link(row["sample_session"], "Session with this command"),
+                _doc_link("Anthropic: reduce MCP tool overhead",
+                          "https://code.claude.com/docs/en/mcp"),
+            ],
+        ))
+    return out
+
+
 # ── New tip: dead skills (zero invocations in 90d) ───────────────────────────
 
 _DEAD_SKILLS_WINDOW_DAYS = 90
@@ -657,4 +760,5 @@ def all_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         *cross_workspace_tips(db_path, today_iso),
         *dead_skills_tips(db_path, today_iso),
         *subagent_sprawl_tips(db_path, today_iso),
+        *bash_bloat_tips(db_path, today_iso),
     ]

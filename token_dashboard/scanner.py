@@ -35,8 +35,8 @@ INSERT OR REPLACE INTO messages (
 """
 
 INSERT_TOOL = """
-INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, is_error, timestamp)
-VALUES (:message_uuid, :session_id, :project_slug, :tool_name, :target, :result_tokens, :is_error, :timestamp)
+INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, is_error, timestamp, tool_use_id)
+VALUES (:message_uuid, :session_id, :project_slug, :tool_name, :target, :result_tokens, :is_error, :timestamp, :tool_use_id)
 """
 
 
@@ -105,6 +105,7 @@ def _extract_tools(rec: dict) -> List[dict]:
             "result_tokens": None,
             "is_error":      0,
             "timestamp":     rec.get("timestamp"),
+            "tool_use_id":   block.get("id"),
         })
     return out
 
@@ -140,6 +141,7 @@ def _extract_slash_commands(rec: dict) -> List[dict]:
         "result_tokens": None,
         "is_error":      0,
         "timestamp":     rec.get("timestamp"),
+        "tool_use_id":   None,
     }]
 
 
@@ -164,6 +166,7 @@ def _extract_results(rec: dict) -> List[dict]:
             "result_tokens": chars // 4,
             "is_error":      1 if block.get("is_error") else 0,
             "timestamp":     rec.get("timestamp"),
+            "tool_use_id":   block.get("tool_use_id"),
         })
     return out
 
@@ -567,6 +570,7 @@ def rescan_slash_commands(db_path: Union[str, Path]) -> dict:
                 "result_tokens": None,
                 "is_error":      0,
                 "timestamp":     row["timestamp"],
+                "tool_use_id":   None,
             })
             synthesized += 1
         conn.commit()

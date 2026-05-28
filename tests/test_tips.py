@@ -10,6 +10,7 @@ from token_dashboard.tips import (
     outlier_tips, cross_workspace_tips, all_tips, dismiss_tip,
     skill_listing_budget_tips, claude_md_size_tips,
     dead_skills_tips, subagent_sprawl_tips,
+    bash_bloat_tips, _has_output_limiter,
 )
 
 
@@ -455,6 +456,103 @@ class SubagentSprawlTests(unittest.TestCase):
         self._ins(uuid="s1", session="compact", ts="2026-05-15T00:01:00Z",
                   sidechain=1, agent_id="acompact-abc123", output_t=100_000)
         tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+
+class BashBloatTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        init_db(self.db)
+
+    def _seed_bash_with_result(self, *, cmd, result_tokens, session="s1",
+                                tool_use_id="tu1",
+                                ts="2026-05-15T00:00:00Z"):
+        with connect(self.db) as c:
+            # Bash tool_use row
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, timestamp, is_error, tool_use_id) VALUES "
+                "(?, ?, 'p', 'Bash', ?, ?, 0, ?)",
+                (f"m-{tool_use_id}", session, cmd, ts, tool_use_id),
+            )
+            # Corresponding _tool_result row
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, result_tokens, timestamp, is_error, tool_use_id) "
+                "VALUES (?, ?, 'p', '_tool_result', ?, ?, ?, 0, ?)",
+                (f"u-{tool_use_id}", session, tool_use_id, result_tokens, ts,
+                 tool_use_id),
+            )
+            c.commit()
+
+    def test_limiter_regex_recognises_unix_patterns(self):
+        self.assertTrue(_has_output_limiter("find / -name foo | head -20"))
+        self.assertTrue(_has_output_limiter("grep -r pattern | tail -50"))
+        self.assertTrue(_has_output_limiter("ls -R | wc -l"))
+
+    def test_limiter_regex_recognises_powershell_patterns(self):
+        self.assertTrue(_has_output_limiter(
+            "Get-ChildItem -Recurse | Select-Object -First 20"))
+        self.assertTrue(_has_output_limiter("Get-Process -First 5"))
+        self.assertTrue(_has_output_limiter(
+            "Get-EventLog -LogName System -TotalCount 100"))
+
+    def test_limiter_regex_no_false_positive_on_bare_command(self):
+        self.assertFalse(_has_output_limiter("find / -name '*.py'"))
+        self.assertFalse(_has_output_limiter("grep -r pattern ."))
+
+    def test_bloated_command_without_limiter_flagged(self):
+        # Same command, two invocations, both producing >5k tokens.
+        for i in range(2):
+            self._seed_bash_with_result(
+                cmd="find / -name '*.py'",
+                result_tokens=20_000,
+                tool_use_id=f"tu{i}",
+                ts=f"2026-05-15T00:0{i}:00Z",
+            )
+        tips = bash_bloat_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertTrue(tips)
+        t = tips[0]
+        _assert_tip_shape(self, t)
+        self.assertEqual(t["category"], "bash-bloat")
+        self.assertIn("find /", t["title"])
+        hrefs = [l["href"] for l in t["links"]]
+        self.assertTrue(any("#/sessions/" in h for h in hrefs))
+
+    def test_command_with_limiter_not_flagged(self):
+        # Same big output, but limiter already present → don't nag the user.
+        for i in range(2):
+            self._seed_bash_with_result(
+                cmd="find / -name '*.py' | head -20",
+                result_tokens=20_000,
+                tool_use_id=f"tu{i}",
+                ts=f"2026-05-15T00:0{i}:00Z",
+            )
+        tips = bash_bloat_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+    def test_small_results_not_flagged(self):
+        # Two invocations but each result is small → not a bloat case.
+        for i in range(2):
+            self._seed_bash_with_result(
+                cmd="ls",
+                result_tokens=200,
+                tool_use_id=f"tu{i}",
+                ts=f"2026-05-15T00:0{i}:00Z",
+            )
+        tips = bash_bloat_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertFalse(tips)
+
+    def test_single_occurrence_not_flagged(self):
+        # One big invocation alone isn't a pattern worth a tip.
+        self._seed_bash_with_result(
+            cmd="git log --all -p",
+            result_tokens=50_000,
+            tool_use_id="tu1",
+            ts="2026-05-15T00:00:00Z",
+        )
+        tips = bash_bloat_tips(self.db, today_iso="2026-05-16T00:00:00")
         self.assertFalse(tips)
 
 
