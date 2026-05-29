@@ -325,6 +325,28 @@ def _safe_scan_root(root: Path) -> Optional[Path]:
     return resolved
 
 
+def _iter_skill_files(root: Path) -> Iterable[Path]:
+    """Yield SKILL.md files under root, following directory symlinks safely.
+
+    Uses os.walk(followlinks=True) with a seen-real-paths set to prevent
+    infinite loops on circular symlinks. Path.rglob() does not follow
+    symlinks on all platforms/Python versions.
+    """
+    seen: set = set()
+    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=True):
+        try:
+            real = os.path.realpath(dirpath)
+        except OSError:
+            dirnames[:] = []
+            continue
+        if real in seen:
+            dirnames[:] = []
+            continue
+        seen.add(real)
+        if "SKILL.md" in filenames:
+            yield Path(dirpath) / "SKILL.md"
+
+
 def _normalise_roots(roots) -> List[dict]:
     """Accept either bare Paths (legacy) or root-dicts and return root-dicts.
 
@@ -359,7 +381,7 @@ def scan_catalog(roots=None) -> Dict[str, dict]:
         root = _safe_scan_root(spec["root"])
         if root is None or not root.is_dir():
             continue
-        for md in root.rglob("SKILL.md"):
+        for md in _iter_skill_files(root):
             try:
                 chars = md.stat().st_size
             except OSError:

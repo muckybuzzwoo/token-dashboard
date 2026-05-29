@@ -114,6 +114,19 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("visual-explainer", slugs)
         self.assertNotIn("0.6.3", slugs)
 
+    def test_scan_catalog_follows_symlinked_skill_directories(self):
+        source = self.tmp / "shared-skill-library" / "lint-helper"
+        _write(source / "SKILL.md", "t" * 400)
+        project_skills = self.tmp / "repo" / ".claude" / "skills"
+        project_skills.mkdir(parents=True)
+        try:
+            os.symlink(source, project_skills / "lint-helper")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not available on this platform/configuration")
+        cat = scan_catalog([project_skills])
+        self.assertIn("lint-helper", cat)
+        self.assertEqual(cat["lint-helper"]["tokens"], 100)
+
     def test_missing_skill_not_in_catalog(self):
         # No file written; lookup should return None (server surfaces as tokens_per_call: None)
         cat = scan_catalog([self.tmp / "skills"])
