@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -186,6 +187,8 @@ class ManifestParsingTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.settings = self.tmp / "settings.json"
+        self.settings.write_text("{}", encoding="utf-8")
 
     def _write_manifest(self, payload: str) -> Path:
         m = self.tmp / "installed_plugins.json"
@@ -199,7 +202,7 @@ class ManifestParsingTests(unittest.TestCase):
           "foo@m": [{"installPath": "/some/path", "scope": "user",
                      "projectPath": "/home/u"}]
         }}''')
-        entries = _read_installed_plugin_entries(m)
+        entries = _read_installed_plugin_entries(m, self.settings)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["scope"], "user")
         self.assertEqual(entries[0]["project_path"], "/home/u")
@@ -215,7 +218,7 @@ class ManifestParsingTests(unittest.TestCase):
              "projectPath": "/repo/x"}
           ]
         }}''')
-        entries = _read_installed_plugin_entries(m)
+        entries = _read_installed_plugin_entries(m, self.settings)
         self.assertEqual(len(entries), 2)
         scopes = {e["scope"] for e in entries}
         self.assertEqual(scopes, {"user", "project"})
@@ -224,19 +227,19 @@ class ManifestParsingTests(unittest.TestCase):
         # None signals "unreadable / broken" → caller falls back to legacy scan.
         # Distinct from a valid-but-empty manifest (which returns []).
         from token_dashboard.skills import _read_installed_plugin_entries
-        self.assertIsNone(_read_installed_plugin_entries(self.tmp / "absent.json"))
+        self.assertIsNone(_read_installed_plugin_entries(self.tmp / "absent.json", self.settings))
 
     def test_malformed_json_returns_none(self):
         from token_dashboard.skills import _read_installed_plugin_entries
         m = self._write_manifest("{not valid json")
-        self.assertIsNone(_read_installed_plugin_entries(m))
+        self.assertIsNone(_read_installed_plugin_entries(m, self.settings))
 
     def test_corrupt_utf8_returns_none(self):
         # UnicodeDecodeError is a ValueError subclass; must be caught.
         from token_dashboard.skills import _read_installed_plugin_entries
         m = self.tmp / "installed_plugins.json"
         m.write_bytes(b"\xff\xfe\x00invalid utf8 sequence")
-        self.assertIsNone(_read_installed_plugin_entries(m))
+        self.assertIsNone(_read_installed_plugin_entries(m, self.settings))
 
     def test_valid_empty_manifest_returns_empty_list(self):
         # A user with zero installed plugins is a legitimate state, NOT a
@@ -244,7 +247,7 @@ class ManifestParsingTests(unittest.TestCase):
         # root for this case — otherwise marketplace clones get re-included.
         from token_dashboard.skills import _read_installed_plugin_entries
         m = self._write_manifest('{"version": 2, "plugins": {}}')
-        self.assertEqual(_read_installed_plugin_entries(m), [])
+        self.assertEqual(_read_installed_plugin_entries(m, self.settings), [])
 
     def test_entry_without_install_path_skipped(self):
         from token_dashboard.skills import _read_installed_plugin_entries
@@ -252,7 +255,7 @@ class ManifestParsingTests(unittest.TestCase):
         {"version": 2, "plugins": {
           "x@m": [{"scope": "user"}]
         }}''')
-        self.assertEqual(_read_installed_plugin_entries(m), [])
+        self.assertEqual(_read_installed_plugin_entries(m, self.settings), [])
 
     def test_project_scope_without_project_path_degrades_to_user(self):
         # Without a projectPath, is_active_in_cwd would short-circuit to False
@@ -263,9 +266,43 @@ class ManifestParsingTests(unittest.TestCase):
         {"version": 2, "plugins": {
           "x@m": [{"installPath": "/some/path", "scope": "project"}]
         }}''')
-        entries = _read_installed_plugin_entries(m)
+        entries = _read_installed_plugin_entries(m, self.settings)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["scope"], "user")
+
+    def test_disabled_plugin_excluded_when_enabled_plugins_set(self):
+        from token_dashboard.skills import _read_installed_plugin_entries
+        manifest = self._write_manifest(json.dumps({
+            "version": 2,
+            "plugins": {
+                "active@m": [{"installPath": "/x/active", "scope": "user"}],
+                "inactive@m": [{"installPath": "/x/inactive", "scope": "user"}],
+            }
+        }))
+        settings = self.tmp / "settings.json"
+        settings.write_text(json.dumps({
+            "enabledPlugins": {"active@m": True, "inactive@m": False}
+        }), encoding="utf-8")
+        entries = _read_installed_plugin_entries(manifest, settings)
+        install_paths = [e["install_path"] for e in entries]
+        self.assertIn(Path("/x/active"), install_paths)
+        self.assertNotIn(Path("/x/inactive"), install_paths)
+
+    def test_absent_enabled_plugins_key_includes_all(self):
+        from token_dashboard.skills import _read_installed_plugin_entries
+        manifest = self._write_manifest(json.dumps({
+            "version": 2,
+            "plugins": {
+                "a@m": [{"installPath": "/x/a", "scope": "user"}],
+                "b@m": [{"installPath": "/x/b", "scope": "user"}],
+            }
+        }))
+        settings = self.tmp / "settings.json"
+        settings.write_text("{}", encoding="utf-8")
+        entries = _read_installed_plugin_entries(manifest, settings)
+        install_paths = [e["install_path"] for e in entries]
+        self.assertIn(Path("/x/a"), install_paths)
+        self.assertIn(Path("/x/b"), install_paths)
 
 
 class DefaultRootsResolutionTests(unittest.TestCase):
@@ -279,6 +316,12 @@ class DefaultRootsResolutionTests(unittest.TestCase):
         m.write_text(payload, encoding="utf-8")
         return m
 
+    def _neutral_settings(self) -> Path:
+        """Write a settings.json with no enabledPlugins key (= no filter)."""
+        s = self.tmp / "settings.json"
+        s.write_text("{}", encoding="utf-8")
+        return s
+
     def test_manifest_drives_active_roots(self):
         from token_dashboard.skills import _default_roots
         m = self._manifest('''
@@ -287,7 +330,7 @@ class DefaultRootsResolutionTests(unittest.TestCase):
           "bar@m": [{"installPath": "/x/bar", "scope": "project",
                      "projectPath": "/repo/y"}]
         }}''')
-        roots = _default_roots(m)
+        roots = _default_roots(m, self._neutral_settings())
         # Two user-skills/scheduled-tasks roots + 2 plugin roots = 4 entries.
         plugin_roots = [r for r in roots if "/x/" in str(r["root"]).replace("\\", "/")]
         self.assertEqual(len(plugin_roots), 2)
@@ -299,7 +342,7 @@ class DefaultRootsResolutionTests(unittest.TestCase):
 
     def test_missing_manifest_falls_back_to_legacy_blanket_scan(self):
         from token_dashboard.skills import _default_roots, _LEGACY_PLUGINS_ROOT
-        roots = _default_roots(self.tmp / "absent.json")
+        roots = _default_roots(self.tmp / "absent.json", self._neutral_settings())
         # Legacy fallback adds the blanket plugins root tagged 'unknown'.
         legacy = [r for r in roots if r["root"] == _LEGACY_PLUGINS_ROOT]
         self.assertEqual(len(legacy), 1)
@@ -312,7 +355,7 @@ class DefaultRootsResolutionTests(unittest.TestCase):
         from token_dashboard.skills import _default_roots, _LEGACY_PLUGINS_ROOT
         m = self.tmp / "installed_plugins.json"
         m.write_text('{"version": 2, "plugins": {}}', encoding="utf-8")
-        roots = _default_roots(m)
+        roots = _default_roots(m, self._neutral_settings())
         legacy = [r for r in roots if r["root"] == _LEGACY_PLUGINS_ROOT]
         self.assertEqual(legacy, [],
                          "Empty manifest must NOT trigger legacy blanket scan")
@@ -323,6 +366,11 @@ class CatalogFilteringTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+
+    def _neutral_settings(self) -> Path:
+        s = self.tmp / "settings.json"
+        s.write_text("{}", encoding="utf-8")
+        return s
 
     def test_marketplace_clone_outside_install_paths_excluded(self):
         # Two SKILL.md files: one under an installed plugin, one orphaned in
@@ -343,7 +391,7 @@ class CatalogFilteringTests(unittest.TestCase):
         }}}}''', encoding="utf-8")
 
         from token_dashboard.skills import scan_catalog, _default_roots
-        roots = _default_roots(manifest)
+        roots = _default_roots(manifest, self._neutral_settings())
         cat = scan_catalog(roots)
         self.assertIn("in", cat)
         self.assertNotIn("out", cat)
@@ -362,7 +410,7 @@ class CatalogFilteringTests(unittest.TestCase):
         }}}}''', encoding="utf-8")
 
         from token_dashboard.skills import scan_catalog, _default_roots
-        cat = scan_catalog(_default_roots(manifest))
+        cat = scan_catalog(_default_roots(manifest, self._neutral_settings()))
         self.assertEqual(cat["s"]["scope"], "project-global")
         self.assertEqual(cat["s"]["project_path"], "/repo/r")
 

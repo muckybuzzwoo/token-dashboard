@@ -33,6 +33,7 @@ activity:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ _USER_SKILLS_ROOT = Path.home() / ".claude" / "skills"
 _SCHEDULED_TASKS_ROOT = Path.home() / ".claude" / "scheduled-tasks"
 _PLUGINS_MANIFEST = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 _LEGACY_PLUGINS_ROOT = Path.home() / ".claude" / "plugins"
+_USER_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
 # Legacy module-level roots kept for backward compatibility with tests that
@@ -158,8 +160,27 @@ def _slugs_for(skill_md: Path) -> list[str]:
 # ── Active-roots resolution ──────────────────────────────────────────────────
 
 
+def _read_enabled_plugin_ids(settings_path=None) -> Optional[set]:
+    """Return the set of enabled plugin IDs, or None when enabledPlugins is absent.
+
+    None means "apply no filter" — all installed plugins are treated as active.
+    This preserves backward compatibility with settings.json files that don't
+    have the enabledPlugins key (the common case).
+    """
+    path = settings_path or _USER_SETTINGS_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    enabled = data.get("enabledPlugins")
+    if not isinstance(enabled, dict):
+        return None
+    return {str(k) for k, v in enabled.items() if v}
+
+
 def _read_installed_plugin_entries(
     manifest_path: Optional[Path] = None,
+    settings_path: Optional[Path] = None,
 ) -> Optional[List[dict]]:
     """Read installed_plugins.json and return active-plugin metadata.
 
@@ -169,6 +190,10 @@ def _read_installed_plugin_entries(
     broken -- callers should distinguish these because the empty case must
     NOT trigger a legacy blanket scan (that would re-introduce marketplace
     clones we explicitly want excluded).
+
+    When ``settings_path`` / ``~/.claude/settings.json`` contains an
+    ``enabledPlugins`` dict, entries for plugins set to ``false`` are
+    excluded. Missing key = no filter = all installed plugins are active.
 
     ``ValueError`` covers both ``json.JSONDecodeError`` (malformed JSON) and
     ``UnicodeDecodeError`` (corrupt byte sequences) -- both are subclasses
@@ -201,8 +226,11 @@ def _read_installed_plugin_entries(
     plugins = data.get("plugins", {})
     if not isinstance(plugins, dict):
         return None
+    enabled_ids = _read_enabled_plugin_ids(settings_path)
     out: List[dict] = []
-    for entries in plugins.values():
+    for plugin_id, entries in plugins.items():
+        if enabled_ids is not None and plugin_id not in enabled_ids:
+            continue
         if not isinstance(entries, list):
             continue
         for entry in entries:
@@ -230,6 +258,7 @@ def _read_installed_plugin_entries(
 
 def _default_roots(
     manifest_path: Optional[Path] = None,
+    settings_path: Optional[Path] = None,
 ) -> List[dict]:
     """Return ``[{root, scope, project_path}, ...]`` for currently-installed skill roots.
 
@@ -238,7 +267,8 @@ def _default_roots(
       2. ``~/.claude/scheduled-tasks/``  — scope=user-global
       3. Every ``installPath`` from ``installed_plugins.json``, tagged with
          scope=user-global (for scope=user entries) or scope=project-global
-         (for scope=project entries, carrying projectPath).
+         (for scope=project entries, carrying projectPath). Entries for plugins
+         disabled via ``enabledPlugins`` in ``settings.json`` are excluded.
       4. Legacy fallback when the manifest is missing or empty:
          ``~/.claude/plugins/`` blanket-scanned with scope=unknown.
 
@@ -250,7 +280,7 @@ def _default_roots(
         {"root": _USER_SKILLS_ROOT, "scope": "user-global", "project_path": None},
         {"root": _SCHEDULED_TASKS_ROOT, "scope": "user-global", "project_path": None},
     ]
-    entries = _read_installed_plugin_entries(manifest_path)
+    entries = _read_installed_plugin_entries(manifest_path, settings_path)
     if entries is None:
         # Manifest missing/unreadable/structurally broken → legacy blanket
         # scan so the dashboard still works on installs without the JSON
