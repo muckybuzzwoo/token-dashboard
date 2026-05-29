@@ -361,6 +361,8 @@ def _skill_overrides(db_path) -> dict:
 
 
 def _description_visible(slugs: set, overrides: dict) -> bool:
+    if not overrides:
+        return True
     for slug in slugs:
         if overrides.get(slug) in _DESCRIPTION_HIDDEN_OVERRIDES:
             return False
@@ -423,12 +425,13 @@ def skill_listing_budget_tips(db_path, today_iso: Optional[str] = None,
         })
         entry["slugs"].append(slug)
     for p, entry in per_path.items():
-        if _skill_disables_model_invocation(p) or not _description_visible(
-            set(entry["slugs"]), overrides
-        ):
-            entry["desc_chars"] = 0
+        frontmatter = _read_skill_frontmatter(p)
+        if (bool(_DISABLE_MODEL_RE.search(frontmatter))
+                or not _description_visible(set(entry["slugs"]), overrides)):
+            entry["desc_chars"] = 0  # hidden — do NOT add to ranked candidates either
         else:
-            entry["desc_chars"] = len(_read_skill_description(p))
+            d = _DESC_RE.search(frontmatter)
+            entry["desc_chars"] = len(d.group(1).strip() if d else "")
         entry["active_here"] = is_active_in_cwd(
             entry["scope"], entry["project_path"], top_cwd,
         )
