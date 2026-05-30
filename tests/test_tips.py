@@ -503,23 +503,29 @@ class SubagentSprawlTests(unittest.TestCase):
         self.db = os.path.join(self.tmp, "t.db")
         init_db(self.db)
 
-    def _ins(self, *, uuid, session, ts, sidechain, input_t=0, output_t=0,
-             agent_id=None):
+    def _dispatch(self, *, session, ts, tool_use_id, return_tokens):
+        """Insert an Agent call + matching _tool_result return row."""
         with connect(self.db) as c:
             c.execute(
-                "INSERT INTO messages (uuid, session_id, project_slug, type, "
-                "timestamp, model, is_sidechain, agent_id, input_tokens, output_tokens) "
-                "VALUES (?, ?, 'p', 'assistant', ?, 'claude-opus-4-7', ?, ?, ?, ?)",
-                (uuid, session, ts, sidechain, agent_id, input_t, output_t),
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, result_tokens, is_error, timestamp, tool_use_id) "
+                "VALUES (?, ?, 'p', 'Agent', 'general-purpose', NULL, 0, ?, ?)",
+                (f"m-{tool_use_id}", session, ts, tool_use_id),
+            )
+            c.execute(
+                "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                "tool_name, target, result_tokens, is_error, timestamp, tool_use_id) "
+                "VALUES (?, ?, 'p', '_tool_result', ?, ?, 0, ?, ?)",
+                (f"r-{tool_use_id}", session, tool_use_id, return_tokens, ts, tool_use_id),
             )
             c.commit()
 
-    def test_sprawl_session_flagged(self):
-        # Main chain: 10k tokens; sidechain: 100k → ratio 10× and > 50k → flag.
-        self._ins(uuid="m1", session="sprawl", ts="2026-05-15T00:00:00Z",
-                  sidechain=0, output_t=10_000)
-        self._ins(uuid="s1", session="sprawl", ts="2026-05-15T00:01:00Z",
-                  sidechain=1, agent_id="research", output_t=100_000)
+    def test_bloated_returns_flagged(self):
+        # Two dispatches returning 12k each → total 24k, avg 12k → flag.
+        self._dispatch(session="sprawl", ts="2026-05-15T00:00:00Z",
+                       tool_use_id="t1", return_tokens=12_000)
+        self._dispatch(session="sprawl", ts="2026-05-15T00:01:00Z",
+                       tool_use_id="t2", return_tokens=12_000)
         tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
         self.assertTrue(tips)
         t = tips[0]
@@ -529,30 +535,29 @@ class SubagentSprawlTests(unittest.TestCase):
         hrefs = [l["href"] for l in t["links"]]
         self.assertIn("#/sessions/sprawl", hrefs)
 
-    def test_balanced_session_not_flagged(self):
-        # Main: 100k, sidechain: 50k → ratio 0.5× → no flag.
-        self._ins(uuid="m1", session="balanced", ts="2026-05-15T00:00:00Z",
-                  sidechain=0, output_t=100_000)
-        self._ins(uuid="s1", session="balanced", ts="2026-05-15T00:01:00Z",
-                  sidechain=1, agent_id="research", output_t=50_000)
+    def test_tight_returns_not_flagged(self):
+        # Real-world good delegation: subagents returned ~1k each → no flag,
+        # regardless of how much they burned internally.
+        self._dispatch(session="lean", ts="2026-05-15T00:00:00Z",
+                       tool_use_id="t1", return_tokens=600)
+        self._dispatch(session="lean", ts="2026-05-15T00:01:00Z",
+                       tool_use_id="t2", return_tokens=1_100)
         tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
         self.assertFalse(tips)
 
-    def test_small_sidechain_under_threshold_not_flagged(self):
-        # Ratio is huge but sidechain absolute < 50k → no flag (noise floor).
-        self._ins(uuid="m1", session="tiny", ts="2026-05-15T00:00:00Z",
-                  sidechain=0, output_t=100)
-        self._ins(uuid="s1", session="tiny", ts="2026-05-15T00:01:00Z",
-                  sidechain=1, agent_id="research", output_t=10_000)
+    def test_single_bloated_dispatch_under_total_not_flagged(self):
+        # One 15k return: avg passes but total < 20k → no flag (noise floor).
+        self._dispatch(session="one", ts="2026-05-15T00:00:00Z",
+                       tool_use_id="t1", return_tokens=15_000)
         tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
         self.assertFalse(tips)
 
-    def test_auto_compaction_sidechain_excluded(self):
-        # Heavy 'sidechain' but it's auto-compaction (acompact-*) → ignored.
-        self._ins(uuid="m1", session="compact", ts="2026-05-15T00:00:00Z",
-                  sidechain=0, output_t=10_000)
-        self._ins(uuid="s1", session="compact", ts="2026-05-15T00:01:00Z",
-                  sidechain=1, agent_id="acompact-abc123", output_t=100_000)
+    def test_many_tight_returns_not_flagged(self):
+        # 10 dispatches × 3k each = 30k total but avg below 5k → not sprawl,
+        # just lots of well-scoped delegation.
+        for i in range(10):
+            self._dispatch(session="many", ts=f"2026-05-15T00:0{i}:00Z",
+                           tool_use_id=f"t{i}", return_tokens=3_000)
         tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
         self.assertFalse(tips)
 
