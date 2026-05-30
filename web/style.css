@@ -62,6 +62,14 @@ header.topbar {
   background: var(--panel-2); border: 1px solid var(--border);
   color: var(--muted); font-size: 12px; font-family: var(--mono);
 }
+.topbar button.pill {
+  cursor: pointer;
+}
+.privacy-toggle.active {
+  color: var(--text);
+  border-color: rgba(63,182,139,0.45);
+  background: rgba(63,182,139,0.12);
+}
 
 /* main */
 main#app { padding: 24px 20px; max-width: 1400px; margin: 0 auto; }
@@ -266,8 +274,24 @@ button.ghost { background: transparent; color: var(--muted); }
 }
 
 /* privacy blur */
-.blur-sensitive { transition: filter 120ms; }
-body.privacy-on .blur-sensitive { filter: blur(6px); }
+.blur-sensitive {
+  transition: filter 120ms, color 120ms, text-shadow 120ms, background-color 120ms;
+}
+body.privacy-on .blur-sensitive {
+  filter: blur(7px);
+  user-select: none;
+  pointer-events: none;
+}
+body.privacy-on .blur-sensitive:not(canvas) {
+  color: transparent !important;
+  text-shadow: 0 0 10px rgba(230,237,243,0.9);
+  background-color: rgba(139,152,166,0.18);
+  border-radius: 4px;
+}
+body.privacy-on .blur-sensitive * {
+  color: transparent !important;
+  text-shadow: 0 0 10px rgba(230,237,243,0.9);
+}
 
 /* first-run modal */
 .modal-overlay {

@@ -93,7 +93,7 @@ export default async function (root) {
 
     <div class="row cols-3">
       <div class="card kpi"><div class="label">Subagent share</div><div class="value">${subagentPct}</div><div class="sub">${fmt.int(totalSubagentMsgs)} Task-dispatched msgs</div></div>
-      <div class="card kpi"><div class="label">Subagent cost (est.)</div><div class="value">${fmt.usd(totalSubagentCost)}</div><div class="sub">vs auto-compact ${fmt.usd(totalCompactCost)}</div></div>
+      <div class="card kpi"><div class="label">Subagent cost (est.)</div><div class="value blur-sensitive">${fmt.usd(totalSubagentCost)}</div><div class="sub blur-sensitive">vs auto-compact ${fmt.usd(totalCompactCost)}</div></div>
       <div class="card kpi"><div class="label">SDK orchestration runs</div><div class="value">${fmt.int(sdkSessions)}</div><div class="sub">${fmt.int(sdkMsgs)} msgs across ${sdkRuns.length} clusters</div></div>
     </div>
 
@@ -110,7 +110,7 @@ export default async function (root) {
         <p class="muted" style="margin:-4px 0 14px;font-size:12px">
           How the agent was launched: <code>cli</code> (terminal claude), <code>claude-vscode</code> (IDE), <code>sdk-py</code>/<code>sdk-ts</code>/<code>sdk-cli</code> (external orchestration — scripts invoking models directly via the Agent SDK).
         </p>
-        <div id="ch-entrypoint" style="height:340px"></div>
+        <div id="ch-entrypoint" class="blur-sensitive" style="height:340px"></div>
       </div>
     </div>
 
@@ -132,8 +132,8 @@ export default async function (root) {
         <tbody>
           ${sdkRuns.length === 0 ? '<tr><td colspan="7" class="muted">no SDK-orchestrated runs in this range</td></tr>' : sdkRuns.map(r => `
             <tr>
-              <td><span class="badge">${fmt.htmlSafe(r.entrypoint)}</span></td>
-              <td title="${fmt.htmlSafe(r.cwd || '')}">${fmt.htmlSafe(r.workspace || r.project_slug)}</td>
+              <td><span class="badge blur-sensitive">${fmt.htmlSafe(r.entrypoint)}</span></td>
+              <td class="blur-sensitive" title="${fmt.htmlSafe(r.cwd || '')}">${fmt.htmlSafe(r.workspace || r.project_slug)}</td>
               <td class="num">${fmt.int(r.sessions)}</td>
               <td class="num">${fmt.int(r.messages)}</td>
               <td class="num">${fmt.int(r.io_tokens)}</td>
@@ -165,7 +165,7 @@ export default async function (root) {
               <td class="num">${fmt.int(r.sessions)}</td>
               <td class="num">${fmt.int((r.input_tokens || 0) + (r.output_tokens || 0))}</td>
               <td class="num">${fmt.int(r.cache_read_tokens)}</td>
-              <td class="num">${fmt.usd(r.cost_usd)}${r.cost_estimated ? ' <span class="muted">~</span>' : ''}</td>
+              <td class="num blur-sensitive">${fmt.usd(r.cost_usd)}${r.cost_estimated ? ' <span class="muted">~</span>' : ''}</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -195,12 +195,12 @@ export default async function (root) {
               <td><span class="badge model-${fmt.modelClass(t.dispatcher_model)}">${fmt.htmlSafe(fmt.modelShort(t.dispatcher_model || 'unknown'))}</span></td>
               <td class="muted">→</td>
               <td>${(t.models || []).map(m => `<span class="badge model-${fmt.modelClass(m)}">${fmt.htmlSafe(fmt.modelShort(m))}</span>`).join(' ')}</td>
-              <td class="mono" style="font-size:11px">${t.subagent_type ? fmt.htmlSafe(t.subagent_type) : '<span class="muted">—</span>'}</td>
-              <td class="mono" style="font-size:11px" title="${fmt.htmlSafe(t.session_id)}">${fmt.htmlSafe(t.session_id.slice(0, 8))}…</td>
-              <td>${fmt.htmlSafe(t.project_name || t.project_slug || '')}</td>
+              <td class="mono blur-sensitive" style="font-size:11px">${t.subagent_type ? fmt.htmlSafe(t.subagent_type) : '<span class="muted">—</span>'}</td>
+              <td class="mono blur-sensitive" style="font-size:11px" title="${fmt.htmlSafe(t.session_id)}">${fmt.htmlSafe(t.session_id.slice(0, 8))}…</td>
+              <td class="blur-sensitive">${fmt.htmlSafe(t.project_name || t.project_slug || '')}</td>
               <td class="num">${fmt.int(t.thread_msgs)}</td>
               <td class="num">${fmt.int(t.io_tokens)}</td>
-              <td class="num">${fmt.usd(t.child_cost_usd)}${t.child_cost_estimated ? ' <span class="muted">~</span>' : ''}</td>
+              <td class="num blur-sensitive">${fmt.usd(t.child_cost_usd)}${t.child_cost_estimated ? ' <span class="muted">~</span>' : ''}</td>
               <td class="mono" style="font-size:11px">${fmt.ts(t.dispatched_at)}</td>
             </tr>`).join('')}
         </tbody>
@@ -224,8 +224,8 @@ export default async function (root) {
         <tbody>
           ${tops.length === 0 ? '<tr><td colspan="6" class="muted">no subagent activity in this range</td></tr>' : tops.map(t => `
             <tr class="clickable" data-session="${fmt.htmlSafe(t.session_id)}">
-              <td>${fmt.htmlSafe(t.project_name || t.project_slug)}</td>
-              <td class="mono" style="font-size:11px" title="${fmt.htmlSafe(t.session_id)}">${fmt.htmlSafe(t.session_id.slice(0, 8))}…</td>
+              <td class="blur-sensitive">${fmt.htmlSafe(t.project_name || t.project_slug)}</td>
+              <td class="mono blur-sensitive" style="font-size:11px" title="${fmt.htmlSafe(t.session_id)}">${fmt.htmlSafe(t.session_id.slice(0, 8))}…</td>
               <td class="num">${fmt.int(t.subagent_msgs)}</td>
               <td class="num">${fmt.int(t.io_tokens)}</td>
               <td class="num">${fmt.int(t.cache_read_tokens)}</td>

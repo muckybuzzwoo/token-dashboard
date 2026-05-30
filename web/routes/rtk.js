@@ -75,8 +75,8 @@ export default async function (root) {
     <div class="row" style="grid-template-columns:1fr 1fr;margin-bottom:16px">
       <div class="card" style="display:flex;flex-direction:column;justify-content:center">
         <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Est. API Cost Saved</div>
-        <div style="font-size:40px;font-weight:700;color:var(--good);font-family:var(--mono);line-height:1">${toUsd(s.total_saved)}</div>
-        <div class="muted" style="font-size:11px;margin-top:6px">Sonnet · $3 / MTok input · base pricing</div>
+        <div class="blur-sensitive" style="font-size:40px;font-weight:700;color:var(--good);font-family:var(--mono);line-height:1">${toUsd(s.total_saved)}</div>
+        <div class="muted blur-sensitive" style="font-size:11px;margin-top:6px">Sonnet · $3 / MTok input · base pricing</div>
         <div class="muted" style="font-size:11px">Actual savings higher with cache hits</div>
       </div>
       <div class="card">
@@ -98,7 +98,7 @@ export default async function (root) {
                 <td style="padding:6px 0;text-align:right;color:var(--good)">${fmt.compact(m.saved_tokens)}</td>
                 <td style="padding:6px 0;text-align:right">${m.savings_pct.toFixed(0)}%</td>
                 <td style="padding:6px 0;text-align:right;color:var(--muted)">${fmt.int(m.commands)}</td>
-                <td style="padding:6px 0;text-align:right;color:var(--good);font-family:var(--mono)">${toUsd(m.saved_tokens)}</td>
+                <td class="blur-sensitive" style="padding:6px 0;text-align:right;color:var(--good);font-family:var(--mono)">${toUsd(m.saved_tokens)}</td>
               </tr>`).join('')}
           </tbody>
         </table>

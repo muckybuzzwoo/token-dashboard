@@ -26,6 +26,8 @@ export const fmt = {
   time: t => t ? new Date(t).toLocaleTimeString('sv') : '',
 };
 
+const PRIVACY_KEY = 'td.privacy-on';
+
 /**
  * Wire click-to-sort on all <th> in a table.
  * Each <td> must carry a data-val attribute with the raw sort value.
@@ -147,8 +149,8 @@ function buildTopbar() {
       ${Object.keys(ROUTES).map(p => `<a href="#${p}" data-route="${p}">${p.slice(1)}</a>`).join('')}
     </nav>
     <div class="spacer"></div>
-    <span class="pill" id="plan-pill">api</span>
-    <span class="pill muted" title="Cmd/Ctrl+B blurs sensitive text">⌘B blur</span>
+    <span class="pill blur-sensitive" id="plan-pill">api</span>
+    <button id="privacy-toggle" class="pill privacy-toggle" type="button" title="Ctrl/Cmd/Alt+B blurs sensitive text" aria-pressed="false">blur off</button>
     <button id="refresh-btn" class="refresh-btn" title="Manually refresh data">↻ 60s</button>
   `;
   document.body.prepend(wrap);
@@ -159,6 +161,16 @@ function buildTopbar() {
   banner.className = 'refresh-banner hidden';
   banner.innerHTML = '<span class="spin">↻</span><span>Getting latest data…</span>';
   document.body.insertBefore(banner, document.getElementById('app'));
+}
+
+function setPrivacyMode(on) {
+  document.body.classList.toggle('privacy-on', on);
+  localStorage.setItem(PRIVACY_KEY, on ? '1' : '0');
+  const btn = document.getElementById('privacy-toggle');
+  if (!btn) return;
+  btn.textContent = on ? 'blur on' : 'blur off';
+  btn.classList.toggle('active', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
 
 function setActiveTab(routeKey) {
@@ -197,7 +209,7 @@ async function firstRun() {
     <div class="modal">
       <h2>Welcome — pick your plan</h2>
       <p>This sets how costs are displayed. Change it later in Settings.</p>
-      <select id="firstplan" style="width:100%">
+      <select id="firstplan" class="blur-sensitive" style="width:100%">
         ${plans.map(([k,v]) => `<option value="${k}">${v.label}${v.monthly ? ` — $${v.monthly}/mo` : ''}</option>`).join('')}
       </select>
       <div class="actions">
@@ -232,6 +244,20 @@ async function firstRun() {
 
 async function boot() {
   buildTopbar();
+  setPrivacyMode(localStorage.getItem(PRIVACY_KEY) === '1');
+  document.getElementById('privacy-toggle').addEventListener('click', () => {
+    setPrivacyMode(!document.body.classList.contains('privacy-on'));
+  });
+
+  // Privacy blur (Ctrl/Cmd/Alt+B). Some OSes intercept Windows+B; the
+  // topbar button is the fallback when the browser never receives it.
+  window.addEventListener('keydown', e => {
+    if (!e.repeat && (e.metaKey || e.ctrlKey || e.altKey) && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      setPrivacyMode(!document.body.classList.contains('privacy-on'));
+    }
+  });
+
   const planResp = await api('/api/plan');
   state.plan = planResp.plan;
   state.pricing = planResp.pricing;
@@ -241,14 +267,6 @@ async function boot() {
 
   window.addEventListener('hashchange', render);
   await render();
-
-  // Privacy blur (Cmd+B / Ctrl+B)
-  window.addEventListener('keydown', e => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
-      e.preventDefault();
-      document.body.classList.toggle('privacy-on');
-    }
-  });
 
   // Refresh button:
   //   - If new data is buffered → apply it (re-render current page)

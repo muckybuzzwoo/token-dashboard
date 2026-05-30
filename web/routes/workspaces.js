@@ -61,7 +61,7 @@ export default async function (root) {
       <p class="muted" style="margin:-4px 0 14px;font-size:12px">
         Bipartite Sankey: left column = where the session ran, right column = which workspace's files it touched. Same-name pairs (e.g. <code>token-dashboard-mucky (agent) → token-dashboard-mucky (files)</code>) are within-workspace work. Cross-pairs are the consolidation candidates. Only Read/Edit/Write/NotebookEdit counted (${matrix.tools_considered.join(', ')}).
       </p>
-      <div id="ch-workspaces" style="height:560px"></div>
+      <div id="ch-workspaces" class="blur-sensitive" style="height:560px"></div>
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -81,13 +81,13 @@ export default async function (root) {
         <tbody>
           ${leaks.length === 0 ? '<tr><td colspan="6" class="muted">no cross-workspace activity in this range</td></tr>' : leaks.map(l => `
             <tr>
-              <td><span class="badge">${fmt.htmlSafe(l.source)}</span></td>
+              <td><span class="badge blur-sensitive">${fmt.htmlSafe(l.source)}</span></td>
               <td class="muted">→</td>
-              <td><span class="badge">${fmt.htmlSafe(l.target)}</span></td>
+              <td><span class="badge blur-sensitive">${fmt.htmlSafe(l.target)}</span></td>
               <td class="num">${fmt.int(l.calls)}</td>
               <td class="num">${fmt.int(l.sessions)}</td>
               <td class="mono" style="font-size:11px">
-                ${l.top_files.map(f => `<div title="${fmt.htmlSafe(f.path)}">${fmt.htmlSafe(fmt.short(f.path, 70))} <span class="muted">(${f.n}×)</span></div>`).join('')}
+                ${l.top_files.map(f => `<div class="blur-sensitive" title="${fmt.htmlSafe(f.path)}">${fmt.htmlSafe(fmt.short(f.path, 70))} <span class="muted">(${f.n}×)</span></div>`).join('')}
               </td>
             </tr>`).join('')}
         </tbody>

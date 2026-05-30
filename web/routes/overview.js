@@ -80,7 +80,7 @@ function renderBundle(root, { totals, projects, sessions, tools, daily, byModel 
       ${kpi('Cache create', fmt.compact(cacheCreate),               fmt.int(cacheCreate) + ' tokens')}
       <div class="card kpi cost">
         <div class="label">Est. cost</div>
-        <div class="value" title="${fmt.usd(totals.cost_usd)}">${fmt.usd(totals.cost_usd)}</div>
+        <div class="value blur-sensitive" title="${fmt.usd(totals.cost_usd)}">${fmt.usd(totals.cost_usd)}</div>
         ${planSubtitle()}
       </div>
     </div>
@@ -112,8 +112,8 @@ function renderBundle(root, { totals, projects, sessions, tools, daily, byModel 
     </div>
 
     <div class="row cols-2" style="margin-top:16px">
-      <div class="card"><h3>Tokens by project</h3><div id="ch-projects" style="height:320px"></div></div>
-      <div class="card">
+      <div class="card"><h3>Tokens by project</h3><div id="ch-projects" class="blur-sensitive" style="height:320px"></div></div>
+      <div class="card blur-sensitive">
         <h3>Token usage by model</h3>
         <p class="muted" style="margin:-4px 0 4px;font-size:12px">Share of billable tokens per Claude model.</p>
         <div id="ch-model" style="height:300px"></div>
@@ -130,7 +130,7 @@ function renderBundle(root, { totals, projects, sessions, tools, daily, byModel 
             ${sessions.map(s => `
               <tr>
                 <td class="mono">${fmt.ts(s.started)}</td>
-                <td><a href="#/sessions/${encodeURIComponent(s.session_id)}">${fmt.htmlSafe(s.project_name || s.project_slug)}</a></td>
+                <td><a href="#/sessions/${encodeURIComponent(s.session_id)}" class="blur-sensitive">${fmt.htmlSafe(s.project_name || s.project_slug)}</a></td>
                 <td class="num">${fmt.compact(s.tokens)}</td>
               </tr>`).join('') || '<tr><td colspan="3" class="muted">no sessions in this range</td></tr>'}
           </tbody>
@@ -191,5 +191,5 @@ function planSubtitle() {
   if (!state.pricing || state.plan === 'api') return '';
   const p = state.pricing.plans[state.plan];
   if (!p || !p.monthly) return '';
-  return `<div class="sub">pay $${p.monthly}/mo on ${fmt.htmlSafe(p.label)}</div>`;
+  return `<div class="sub blur-sensitive">pay $${p.monthly}/mo on ${fmt.htmlSafe(p.label)}</div>`;
 }

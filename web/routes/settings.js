@@ -12,7 +12,7 @@ export default async function (root) {
       <h3 style="margin-top:16px">Plan</h3>
       <p class="muted" style="margin:0 0 12px">Sets how cost is displayed. API mode shows pay-per-token rates. Subscription modes show what you actually pay each month.</p>
       <div class="flex">
-        <select id="plan">
+        <select id="plan" class="blur-sensitive">
           ${plans.map(([k,v]) => `<option value="${k}" ${k===cur.plan?'selected':''}>${v.label}${v.monthly?` — $${v.monthly}/mo`:''}</option>`).join('')}
         </select>
         <button class="primary" id="save">Save</button>
@@ -25,7 +25,7 @@ export default async function (root) {
       <p class="muted" style="margin:0 0 12px">Set the <code>.claude</code> folder used for transcript scanning. The dashboard scans <code>projects</code> inside this folder. Existing cached dashboard data stays in this SQLite DB unless you clear it before scanning the new folder.</p>
       <div class="flex">
         <span class="combo-input ${savedClaudeDirs.length > 1 ? 'has-trigger' : ''}">
-          <input id="claude-dir" type="text" list="claude-dir-options" autocomplete="off" value="${fmt.htmlSafe(settings.claude_dir)}" ${settings.projects_overridden ? 'disabled' : ''}>
+          <input id="claude-dir" class="blur-sensitive" type="text" list="claude-dir-options" autocomplete="off" value="${fmt.htmlSafe(settings.claude_dir)}" ${settings.projects_overridden ? 'disabled' : ''}>
           <button class="combo-trigger" id="claude-dir-picker" type="button" title="Show saved folders" aria-label="Show saved Claude folders" ${settings.projects_overridden ? 'disabled' : ''}>▾</button>
         </span>
         <datalist id="claude-dir-options">
@@ -38,7 +38,7 @@ export default async function (root) {
         <input id="reset-scan-data" type="checkbox" checked ${settings.projects_overridden ? 'disabled' : ''}>
         <span>Start fresh for this folder: remove previously scanned transcript data before the next scan, so usage from other accounts or profiles is not mixed in.</span>
       </label>
-      ${settings.projects_overridden ? `<p class="muted" style="margin-top:8px">A launch-time projects directory is active: <code>${fmt.htmlSafe(settings.projects_dir)}</code></p>` : `<p class="muted" style="margin-top:8px">Current scan root: <code>${fmt.htmlSafe(settings.projects_dir)}</code></p>`}
+      ${settings.projects_overridden ? `<p class="muted" style="margin-top:8px">A launch-time projects directory is active: <code class="blur-sensitive">${fmt.htmlSafe(settings.projects_dir)}</code></p>` : `<p class="muted" style="margin-top:8px">Current scan root: <code class="blur-sensitive">${fmt.htmlSafe(settings.projects_dir)}</code></p>`}
 
       <hr class="divider">
 
@@ -62,7 +62,7 @@ export default async function (root) {
       <hr class="divider">
 
       <h3>Privacy</h3>
-      <p class="muted">Press <code>Cmd/Ctrl + B</code> anywhere to blur prompt text and other sensitive content for screenshots.</p>
+      <p class="muted">Press <code>Ctrl/Cmd/Alt + B</code> anywhere, or use the topbar control, to blur prompt text and other sensitive content for screenshots.</p>
     </div>`;
 
   $('#save').addEventListener('click', async () => {
