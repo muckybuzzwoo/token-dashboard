@@ -29,11 +29,11 @@ const PERIODS = [
   { key: '90d',   label: '90 days', days: 90 },
 ];
 
-// "YYYY-MM-DDTHH:MM" in the browser's local zone, for <input type=datetime-local>.
-function toLocalInput(ms) {
-  const d = new Date(ms);
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+// Coalesce rapid input events so filtering 500+ rows doesn't thrash the DOM
+// on every keystroke. ~150ms feels instant but skips the intermediate work.
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
 function buildList(root, list, qs) {
@@ -53,9 +53,10 @@ function buildList(root, list, qs) {
   };
   const customActive = () => !!(state.from || state.to);
 
-  // Distinct project names for the dropdown (sorted, case-insensitive).
+  // Distinct project names for the autocomplete (sorted, case-insensitive).
   const projects = [...new Set(list.map(s => s.project_name || s.project_slug).filter(Boolean))]
     .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const projectSet = new Set(projects.map(p => p.toLowerCase()));
 
   root.innerHTML = `
     <div class="card">
@@ -67,11 +68,9 @@ function buildList(root, list, qs) {
         </div>
       </div>
       <div class="flex" style="margin-bottom:10px;flex-wrap:wrap;gap:10px;align-items:center">
-        <select id="f-project" title="Filter by project">
-          <option value="">All projects</option>
-          ${projects.map(p => `<option value="${fmt.htmlSafe(p)}" ${p === state.project ? 'selected' : ''}>${fmt.htmlSafe(p)}</option>`).join('')}
-        </select>
-        <input id="f-search" type="search" placeholder="search project or session…" value="${fmt.htmlSafe(state.q)}" style="flex:1;min-width:180px">
+        <input id="f-project" list="dl-projects" placeholder="all projects…" value="${fmt.htmlSafe(state.project)}" style="min-width:170px" title="Filter by project — type to autocomplete, or pick from the list">
+        <input id="f-search" type="search" list="dl-projects" placeholder="search project or session…" value="${fmt.htmlSafe(state.q)}" style="flex:1;min-width:180px" title="Substring match on project name or session id">
+        <datalist id="dl-projects">${projects.map(p => `<option value="${fmt.htmlSafe(p)}"></option>`).join('')}</datalist>
         <input id="f-mincost" type="number" min="0" step="0.5" placeholder="min $" value="${fmt.htmlSafe(state.minCost)}" style="width:90px" title="Minimum cost (USD)">
         <input id="f-mintokens" type="number" min="0" step="1000" placeholder="min tokens" value="${fmt.htmlSafe(state.minTokens)}" style="width:110px" title="Minimum tokens">
         <button id="f-clear" type="button" title="Clear all filters">Clear</button>
@@ -154,6 +153,10 @@ function buildList(root, list, qs) {
     const needle  = state.q.trim().toLowerCase();
     const minCost = state.minCost !== '' ? Number(state.minCost) : null;
     const minTok  = state.minTokens !== '' ? Number(state.minTokens) : null;
+    // Exact when the value matches a known project (picked from the list);
+    // forgiving substring match while the user is still typing.
+    const pf      = state.project.trim().toLowerCase();
+    const pfExact = pf !== '' && projectSet.has(pf);
 
     let visible = 0, sumTurns = 0, sumTokens = 0, sumCost = 0, anyEst = false, anyCost = false;
 
@@ -166,7 +169,7 @@ function buildList(root, list, qs) {
       const session = tr.dataset.session || '';
 
       const t = started ? new Date(started).getTime() : NaN;
-      const okProject = !state.project || proj === state.project;
+      const okProject = !pf || (pfExact ? proj.toLowerCase() === pf : proj.toLowerCase().includes(pf));
       const okSearch  = !needle || proj.toLowerCase().includes(needle) || session.toLowerCase().includes(needle);
       const okPeriod  = (minMs === -Infinity && maxMs === Infinity) || (!Number.isNaN(t) && t >= minMs && t <= maxMs);
       const okCost    = minCost == null || (cost != null && cost >= minCost);
@@ -190,18 +193,13 @@ function buildList(root, list, qs) {
   }
 
   // ── Wire up controls ─────────────────────────────────────────────────────
-  el('#f-project').addEventListener('change', e => {
-    state.project = e.target.value; applyFilters(); writeState(lastCol, lastDir);
-  });
-  el('#f-search').addEventListener('input', e => {
-    state.q = e.target.value; applyFilters(); writeState(lastCol, lastDir);
-  });
-  el('#f-mincost').addEventListener('input', e => {
-    state.minCost = e.target.value; applyFilters(); writeState(lastCol, lastDir);
-  });
-  el('#f-mintokens').addEventListener('input', e => {
-    state.minTokens = e.target.value; applyFilters(); writeState(lastCol, lastDir);
-  });
+  // Text/number inputs run through a debounce so typing stays smooth even with
+  // hundreds of rows; selecting a datalist suggestion also fires 'input'.
+  const refresh = debounce(() => { applyFilters(); writeState(lastCol, lastDir); }, 150);
+  el('#f-project').addEventListener('input', e => { state.project = e.target.value; refresh(); });
+  el('#f-search').addEventListener('input', e => { state.q = e.target.value; refresh(); });
+  el('#f-mincost').addEventListener('input', e => { state.minCost = e.target.value; refresh(); });
+  el('#f-mintokens').addEventListener('input', e => { state.minTokens = e.target.value; refresh(); });
 
   // Quick-period tabs clear any custom range.
   root.querySelectorAll('#period-tabs button').forEach(btn => {

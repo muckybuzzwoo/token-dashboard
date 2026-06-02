@@ -6,6 +6,7 @@ from token_dashboard.db import (
     init_db, connect,
     overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
+    session_model_tokens,
     daily_token_breakdown, model_breakdown, project_name_for,
     skill_breakdown, rebuild_summaries,
 )
@@ -68,6 +69,35 @@ class QueryTests(unittest.TestCase):
     def test_session_turns(self):
         rows = session_turns(self.db, "s1")
         self.assertEqual(len(rows), 2)
+
+    def test_session_model_tokens_groups_per_session_and_model(self):
+        out = session_model_tokens(self.db, ["s1", "s2"])
+        self.assertEqual(set(out), {"s1", "s2"})
+        s1 = out["s1"]
+        self.assertEqual(len(s1), 1)
+        self.assertEqual(s1[0]["model"], "claude-opus-4-7")
+        self.assertEqual(s1[0]["input_tokens"], 100)
+        self.assertEqual(s1[0]["output_tokens"], 200)
+        self.assertEqual(s1[0]["cache_read_tokens"], 300)
+
+    def test_session_model_tokens_splits_mixed_model_session(self):
+        # A session that used two different models yields one row per model,
+        # so the caller can price each correctly before summing.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens)
+            VALUES
+              ('a3','u1','s1','projA','assistant','2026-04-10T00:00:02Z','claude-haiku-4-5',7,9,0,0,0);
+            """)
+            c.commit()
+        out = session_model_tokens(self.db, ["s1"])
+        by_model = {r["model"]: r for r in out["s1"]}
+        self.assertEqual(set(by_model), {"claude-opus-4-7", "claude-haiku-4-5"})
+        self.assertEqual(by_model["claude-haiku-4-5"]["output_tokens"], 9)
+
+    def test_session_model_tokens_empty_input(self):
+        self.assertEqual(session_model_tokens(self.db, []), {})
 
     def test_daily_token_breakdown_groups_by_day(self):
         rows = daily_token_breakdown(self.db)
