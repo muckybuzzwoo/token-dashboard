@@ -49,6 +49,46 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(rows[0]["prompt_text"], "small")
         self.assertEqual(rows[1]["prompt_text"], "big prompt")
 
+    def test_expensive_prompts_links_across_attachment(self):
+        # Regression: newer Claude Code interposes an `attachment` record between
+        # the typed prompt and the assistant turn, so assistant.parent_uuid no
+        # longer points at the prompt. Linkage must still work via session+time.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
+              prompt_text, prompt_chars, prompt_id, is_sidechain)
+            VALUES
+              ('u3',NULL,'s3','projC','user','2026-05-01T00:00:00Z',NULL,0,0,0,0,0,'new-format prompt',17,'p3',0),
+              ('att3','u3','s3','projC','attachment','2026-05-01T00:00:00.3Z',NULL,0,0,0,0,0,NULL,NULL,'p3',0),
+              ('a3','att3','s3','projC','assistant','2026-05-01T00:00:01Z','claude-opus-4-8',10,20,5,0,0,NULL,NULL,NULL,0);
+            """)
+            c.commit()
+        row = next(r for r in expensive_prompts(self.db, sort="recent")
+                   if r["prompt_text"] == "new-format prompt")
+        self.assertEqual(row["model"], "claude-opus-4-8")
+        self.assertEqual(row["billable_tokens"], 30)   # 10 + 20, despite no parent_uuid link
+        self.assertEqual(row["cache_read_tokens"], 5)
+
+    def test_expensive_prompts_collapses_injected_same_prompt_id(self):
+        # Injected list[text] user messages (skill base dirs, system reminders)
+        # carry prompt_text and share the typed prompt's prompt_id. They must
+        # collapse to the earliest row, not appear as separate prompts.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
+              prompt_text, prompt_chars, prompt_id, is_sidechain)
+            VALUES
+              ('u4',NULL,'s4','projD','user','2026-05-02T00:00:00Z',NULL,0,0,0,0,0,'real typed prompt',17,'p4',0),
+              ('u4b','u4','s4','projD','user','2026-05-02T00:00:05Z',NULL,0,0,0,0,0,'Base directory for this skill: ...',34,'p4',0),
+              ('a4','u4b','s4','projD','assistant','2026-05-02T00:00:10Z','claude-opus-4-8',1,1,0,0,0,NULL,NULL,NULL,0);
+            """)
+            c.commit()
+        texts = [r["prompt_text"] for r in expensive_prompts(self.db, sort="recent")]
+        self.assertIn("real typed prompt", texts)
+        self.assertNotIn("Base directory for this skill: ...", texts)
+
     def test_project_summary_groups(self):
         rows = project_summary(self.db)
         slugs = {r["project_slug"]: r for r in rows}

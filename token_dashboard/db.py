@@ -562,22 +562,53 @@ def overview_totals(db_path, since=None, until=None) -> dict:
 
 
 def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens") -> list:
-    """User prompt joined with the immediately-following assistant turn's tokens.
+    """A typed user prompt and the main-thread assistant work it triggered.
 
     sort="tokens" (default) → largest billable first.
     sort="recent"           → newest first.
+
+    Linkage is by session + time window, NOT by ``parent_uuid``: newer Claude
+    Code versions insert ``attachment`` records between the typed prompt and the
+    assistant turn, so ``assistant.parent_uuid`` no longer points at the prompt
+    (and assistant rows carry no ``prompt_id``). For each session we take the
+    typed prompt (``prompt_text`` set, main thread) — collapsing the injected
+    ``list[text]`` user messages that share a ``prompt_id`` to the earliest row —
+    then attribute every main-thread assistant message between this prompt and
+    the next one to it. Sidechain (subagent) rows are excluded; their spend is
+    the Subagents tab's concern. ``billable_tokens`` is therefore the full turn's
+    cost (incl. its tool loop), not just the first response.
     """
-    order = "u.timestamp DESC" if sort == "recent" else "billable_tokens DESC"
+    order = "timestamp DESC" if sort == "recent" else "billable_tokens DESC"
+    # Window predicate shared by the three correlated aggregates below.
+    win = ("a.session_id=pr.session_id AND a.type='assistant' "
+           "AND COALESCE(a.is_sidechain,0)=0 AND a.timestamp>=pr.timestamp "
+           "AND (pr.next_ts IS NULL OR a.timestamp<pr.next_ts)")
     sql = f"""
-      SELECT u.uuid AS user_uuid, u.session_id, u.project_slug, u.timestamp,
-             u.prompt_text, u.prompt_chars,
-             a.uuid AS assistant_uuid, a.model,
-             COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
-               +COALESCE(a.cache_create_5m_tokens,0)+COALESCE(a.cache_create_1h_tokens,0) AS billable_tokens,
-             COALESCE(a.cache_read_tokens,0) AS cache_read_tokens
-        FROM messages u
-        JOIN messages a ON a.parent_uuid = u.uuid AND a.type='assistant'
-       WHERE u.type='user' AND u.prompt_text IS NOT NULL
+      WITH typed AS (
+        SELECT session_id, project_slug, uuid, prompt_text, prompt_chars, timestamp,
+               ROW_NUMBER() OVER (PARTITION BY session_id, COALESCE(prompt_id, uuid)
+                                  ORDER BY timestamp, uuid) AS rn
+          FROM messages
+         WHERE type='user' AND prompt_text IS NOT NULL AND COALESCE(is_sidechain,0)=0
+      ),
+      prompts AS (
+        SELECT session_id, project_slug, uuid, prompt_text, prompt_chars, timestamp,
+               LEAD(timestamp) OVER (PARTITION BY session_id ORDER BY timestamp, uuid) AS next_ts
+          FROM typed WHERE rn=1
+      )
+      SELECT * FROM (
+        SELECT pr.uuid AS user_uuid, pr.session_id, pr.project_slug, pr.timestamp,
+               pr.prompt_text, pr.prompt_chars,
+               (SELECT a.model FROM messages a
+                 WHERE {win} ORDER BY a.timestamp LIMIT 1) AS model,
+               COALESCE((SELECT SUM(COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
+                          +COALESCE(a.cache_create_5m_tokens,0)+COALESCE(a.cache_create_1h_tokens,0))
+                 FROM messages a WHERE {win}), 0) AS billable_tokens,
+               COALESCE((SELECT SUM(COALESCE(a.cache_read_tokens,0))
+                 FROM messages a WHERE {win}), 0) AS cache_read_tokens
+          FROM prompts pr
+      )
+       WHERE model IS NOT NULL
        ORDER BY {order}
        LIMIT ?
     """
