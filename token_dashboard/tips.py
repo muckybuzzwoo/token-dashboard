@@ -246,10 +246,32 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
                         ORDER BY result_tokens DESC LIMIT 1""",
                     (since,),
                 ).fetchone()
+                # Source-tool attribution via tool_use_id join. Without it the
+                # tip says "12 results over 10k" with no hint which tool to fix.
+                by_source = c.execute(
+                    """SELECT inv.tool_name AS source, COUNT(*) AS n
+                         FROM tool_calls tr
+                         JOIN tool_calls inv
+                           ON inv.tool_use_id = tr.tool_use_id
+                          AND inv.tool_name != '_tool_result'
+                        WHERE tr.tool_name = '_tool_result'
+                          AND tr.result_tokens > 10000
+                          AND tr.timestamp >= ?
+                          AND tr.tool_use_id IS NOT NULL
+                        GROUP BY inv.tool_name
+                        ORDER BY n DESC LIMIT 3""",
+                    (since,),
+                ).fetchall()
+                if by_source:
+                    sources_str = ", ".join(f"{r['source']} ({r['n']})" for r in by_source)
+                    source_sentence = f" Mostly from {sources_str}."
+                else:
+                    source_sentence = ""
                 out.append(_make_tip(
                     key=key, category="tool-bloat", severity=severity,
                     title=f"{big['n']} tool results over 10k tokens this week",
-                    body=(f"Average size {avg_t:,} tokens, biggest {int(big['max_t'] or 0):,}. "
+                    body=(f"Average size {avg_t:,} tokens, biggest {int(big['max_t'] or 0):,}."
+                          f"{source_sentence} "
                           "Claude Code warns above 10k. Pipe long Bash output to `head/tail` and "
                           "ask for narrower file reads or use a preprocess hook."),
                     scope=scope,
