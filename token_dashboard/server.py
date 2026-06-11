@@ -18,6 +18,7 @@ from .db import (
     clear_scan_data, default_claude_dir, get_setting, set_setting,
     overview_totals, expensive_prompts, project_summary,
     tool_token_breakdown, recent_sessions, session_turns,
+    session_model_tokens,
     daily_token_breakdown, model_breakdown, skill_breakdown,
     workspaces_matrix, cross_workspace_leaks,
     subagent_breakdown, top_subagent_sessions,
@@ -347,6 +348,21 @@ def build_handler(db_path: str, projects_dir: Optional[str] = None):
                     db_path, limit=_clamp_limit(qs.get("limit", ["20"])[0], 20),
                     since=since, until=until,
                 )
+                by_model = session_model_tokens(db_path, [s["session_id"] for s in data])
+                for s in data:
+                    total = 0.0
+                    estimated = False
+                    matched = False
+                    for mt in by_model.get(s["session_id"], []):
+                        c = cost_for(mt["model"], mt, pricing)
+                        if c["usd"] is not None:
+                            total += c["usd"]
+                            matched = True
+                            estimated = estimated or c["estimated"]
+                        else:
+                            estimated = True
+                    s["cost_usd"] = round(total, 4) if matched else None
+                    s["cost_estimated"] = estimated
                 _cache_set(cache_key, data)
                 return _send_json(self, data)
             if path == "/api/daily":
