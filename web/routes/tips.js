@@ -48,13 +48,13 @@ function renderTips(root, tips) {
       ${tips.map(t => {
         const sev = severityClass(t.severity);
         const savings = (typeof t.estimated_savings_usd === 'number' && t.estimated_savings_usd > 0)
-          ? `<span class="muted" style="font-size:11px">~${fmt.usd(t.estimated_savings_usd)}/wk</span>`
+          ? `<span class="muted blur-sensitive" style="font-size:11px">~${fmt.usd(t.estimated_savings_usd)}/wk</span>`
           : '';
         return `
         <div class="tip tip-${sev}">
           <div class="tip-head">
             <span class="badge badge-${sev}">${fmt.htmlSafe(t.category)}</span>
-            <strong>${fmt.htmlSafe(t.title)}</strong>
+            <strong class="blur-sensitive">${fmt.htmlSafe(t.title)}</strong>
             ${savings}
             <span class="spacer"></span>
             <button class="ghost" data-key="${fmt.htmlSafe(t.key)}">dismiss</button>

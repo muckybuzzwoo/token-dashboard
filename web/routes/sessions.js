@@ -144,11 +144,11 @@ function buildList(root, list, qs) {
             return `
             <tr data-project="${fmt.htmlSafe(proj)}" data-started="${s.started || ''}" data-turns="${s.turns || 0}" data-tokens="${s.tokens || 0}" data-cost="${s.cost_usd ?? ''}" data-cost-est="${s.cost_estimated ? '1' : ''}" data-session="${fmt.htmlSafe(s.session_id || '')}">
               <td class="mono" data-val="${s.started || ''}">${fmt.ts(s.started)}</td>
-              <td data-val="${fmt.htmlSafe(proj)}" title="${fmt.htmlSafe(s.project_slug)}">${fmt.htmlSafe(proj)}</td>
+              <td class="blur-sensitive" data-val="${fmt.htmlSafe(proj)}" title="${fmt.htmlSafe(s.project_slug)}">${fmt.htmlSafe(proj)}</td>
               <td class="num" data-val="${s.turns || 0}">${fmt.int(s.turns)}</td>
               <td class="num" data-val="${s.tokens || 0}">${fmt.int(s.tokens)}</td>
-              <td class="num" data-val="${s.cost_usd ?? ''}">${s.cost_usd == null ? '<span class="muted">—</span>' : fmt.usd(s.cost_usd)}${s.cost_estimated ? '<span class="muted" title="pricing estimated from model tier">*</span>' : ''}</td>
-              <td data-val="${s.session_id || ''}"><a href="#/sessions/${encodeURIComponent(s.session_id)}" class="mono">${fmt.htmlSafe(s.session_id.slice(0,8))}…</a></td>
+              <td class="num blur-sensitive" data-val="${s.cost_usd ?? ''}">${s.cost_usd == null ? '<span class="muted">—</span>' : fmt.usd(s.cost_usd)}${s.cost_estimated ? '<span class="muted" title="pricing estimated from model tier">*</span>' : ''}</td>
+              <td data-val="${s.session_id || ''}"><a href="#/sessions/${encodeURIComponent(s.session_id)}" class="mono blur-sensitive">${fmt.htmlSafe(s.session_id.slice(0,8))}…</a></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -158,7 +158,7 @@ function buildList(root, list, qs) {
             <td class="muted" id="t-count" style="font-weight:400"></td>
             <td class="num" id="t-turns"></td>
             <td class="num" id="t-tokens"></td>
-            <td class="num" id="t-cost"></td>
+            <td class="num blur-sensitive" id="t-cost"></td>
             <td></td>
           </tr>
         </tfoot>
@@ -353,12 +353,12 @@ function buildSession(root, id, turns, initFilter, initCol, initDir) {
   root.innerHTML = `
     <div class="card">
       <h2 style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;word-break:break-all">
-        <span>Session ${fmt.htmlSafe(id)}</span>
+        <span>Session <span class="blur-sensitive">${fmt.htmlSafe(id)}</span></span>
         <span class="spacer"></span>
         <a href="#/sessions" class="muted" style="white-space:nowrap">← all sessions</a>
       </h2>
       <div class="flex muted" style="font-family:var(--mono);font-size:12px;flex-wrap:wrap;gap:14px">
-        <span>${fmt.htmlSafe(project)}</span>
+        <span class="blur-sensitive">${fmt.htmlSafe(project)}</span>
         <span>${fmt.ts(started)} → ${fmt.ts(ended)}</span>
         <span>${turns.length} records</span>
         <span>${fmt.int(totalIn)} in · ${fmt.int(totalOut)} out · ${fmt.int(totalCacheRd)} cache rd</span>
@@ -379,7 +379,7 @@ function buildSession(root, id, turns, initFilter, initCol, initDir) {
       <table id="session-turns-table">
         <thead><tr>
           <th>time</th><th>type</th><th>model</th>
-          <th class="blur-sensitive">prompt / tools</th>
+          <th>prompt / tools</th>
           <th class="num">in</th><th class="num">out</th><th class="num">cache rd</th>
         </tr></thead>
         <tbody>
