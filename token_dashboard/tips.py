@@ -1281,52 +1281,58 @@ def dead_skills_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
 
 # ── New tip: subagent sprawl ─────────────────────────────────────────────────
 
-_SUBAGENT_SPRAWL_RATIO = 2.0
-_SUBAGENT_SPRAWL_MIN_SIDE_TOKENS = 50_000
+# Threshold on actual return payload — the tokens that flow back into main
+# context when a subagent finishes. Internal subagent burn is not the signal
+# (that's the whole point of delegation); bloated *returns* are.
+_SUBAGENT_RETURN_TOTAL_MIN = 20_000   # sum of Agent returns in a session
+_SUBAGENT_RETURN_AVG_MIN   = 5_000    # avg per dispatch — rules out many tight ones
 
 
 def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    """Flag sessions where sidechain (subagent) tokens dominate main-chain tokens.
+    """Flag sessions where subagents return bloated payloads into main context.
 
-    Subagents have their own context — that's the point. But when they return
-    very large payloads, the main chain absorbs the cost. A 2× sidechain:main
-    ratio with >50k sidechain tokens in 7 days is a strong "subagents are doing
-    too much per dispatch" signal.
-
-    Excludes `acompact-*` agent ids (auto-compaction, not user-dispatched).
+    Subagents have their own context — heavy internal work there is the point,
+    and shouldn't be flagged. The thing that hurts is the *return payload*: the
+    tool_result the parent absorbs when the Agent/Task call completes. Sessions
+    that average ≥5k tokens per return and ≥20k total across all dispatches in
+    7 days are dispatching subagents that are doing too much per call.
     """
     today_iso = today_iso or datetime.utcnow().isoformat()
     since = _iso_days_ago(today_iso, 7)
+    # Join each Agent/Task call to its tool_result via tool_use_id.
     sql = """
-      SELECT session_id,
-             SUM(CASE WHEN is_sidechain=0 THEN input_tokens+output_tokens ELSE 0 END) AS main_t,
-             SUM(CASE WHEN is_sidechain=1
-                          AND (agent_id IS NULL OR agent_id NOT LIKE 'acompact-%')
-                      THEN input_tokens+output_tokens ELSE 0 END) AS side_t
-        FROM messages
-       WHERE type='assistant' AND timestamp >= ?
-       GROUP BY session_id
-       HAVING side_t >= ? AND side_t > ? * (main_t + 1)
-       ORDER BY side_t DESC
+      SELECT a.session_id        AS sid,
+             COUNT(*)            AS n_dispatch,
+             SUM(r.result_tokens) AS total_ret,
+             AVG(r.result_tokens) AS avg_ret,
+             MAX(r.result_tokens) AS max_ret
+        FROM tool_calls a
+        JOIN tool_calls r
+          ON r.tool_name='_tool_result' AND r.target = a.tool_use_id
+       WHERE a.tool_name IN ('Agent','Task')
+         AND a.timestamp >= ?
+       GROUP BY a.session_id
+       HAVING total_ret >= ? AND avg_ret >= ?
+       ORDER BY total_ret DESC
        LIMIT 5
     """
     out = []
     with connect(db_path) as c:
-        for row in c.execute(sql, (since, _SUBAGENT_SPRAWL_MIN_SIDE_TOKENS,
-                                   _SUBAGENT_SPRAWL_RATIO)):
-            sid = row["session_id"]
+        for row in c.execute(sql, (since, _SUBAGENT_RETURN_TOTAL_MIN,
+                                   _SUBAGENT_RETURN_AVG_MIN)):
+            sid = row["sid"]
             key = _key("subagent-sprawl", sid)
             if _is_dismissed(db_path, key):
                 continue
-            ratio = (row["side_t"] or 0) / max(row["main_t"] or 1, 1)
             out.append(_make_tip(
                 key=key, category="subagent-sprawl", severity="info",
-                title=f"Subagent tokens dominate session {sid[:8]}…",
-                body=(f"Sidechain (subagent) tokens: {int(row['side_t']):,}. "
-                      f"Main-chain tokens: {int(row['main_t']):,}. "
-                      f"That's {ratio:.1f}× the main chain. Subagents may be "
-                      "returning more than the orchestrator needs — consider "
-                      "asking for narrower summaries or splitting dispatches."),
+                title=f"Subagent returns inflating main in session {sid[:8]}…",
+                body=(f"{row['n_dispatch']} subagent dispatch(es) returned "
+                      f"{int(row['total_ret']):,} tokens into main context "
+                      f"(avg {int(row['avg_ret']):,}, max {int(row['max_ret']):,}). "
+                      "Large returns negate the point of delegation — ask "
+                      "subagents for narrower summaries, or split one big "
+                      "dispatch into a few focused ones."),
                 scope=sid,
                 links=[
                     _session_link(sid, "Open session"),
