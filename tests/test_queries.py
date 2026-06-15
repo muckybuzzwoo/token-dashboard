@@ -40,6 +40,44 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(t["input_tokens"], 105)
         self.assertEqual(t["output_tokens"], 205)
 
+    def test_turns_exclude_tool_result_user_records(self):
+        # Claude Code writes tool results back as type='user' records (no
+        # prompt_text). They must NOT inflate the "turns" metric (issue #25 #3).
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, prompt_text, prompt_chars)
+            VALUES
+              ('tr1','a1','s1','projA','user','2026-04-10T00:00:02Z',NULL,0,0,NULL,NULL),
+              ('tr2','a1','s1','projA','user','2026-04-10T00:00:03Z',NULL,0,0,NULL,NULL),
+              ('tr3','a2','s2','projB','user','2026-04-11T00:00:02Z',NULL,0,0,NULL,NULL);
+            """)
+            c.commit()
+        # Two real typed prompts (u1, u2); the three tool-result rows must not count.
+        self.assertEqual(overview_totals(self.db)["turns"], 2)
+        by_proj = {r["project_slug"]: r for r in project_summary(self.db)}
+        self.assertEqual(by_proj["projA"]["turns"], 1)
+        self.assertEqual(by_proj["projB"]["turns"], 1)
+        by_sess = {r["session_id"]: r for r in recent_sessions(self.db)}
+        self.assertEqual(by_sess["s1"]["turns"], 1)
+        self.assertEqual(by_sess["s2"]["turns"], 1)
+
+    def test_turns_exclude_tool_result_user_records_summary(self):
+        # Same as above but through the materialised summary tables.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, prompt_text, prompt_chars)
+            VALUES
+              ('tr1','a1','s1','projA','user','2026-04-10T00:00:02Z',NULL,0,0,NULL,NULL),
+              ('tr2','a1','s1','projA','user','2026-04-10T00:00:03Z',NULL,0,0,NULL,NULL);
+            """)
+            c.commit()
+        rebuild_summaries(self.db)
+        self.assertEqual(overview_totals(self.db)["turns"], 2)
+        by_sess = {r["session_id"]: r for r in recent_sessions(self.db)}
+        self.assertEqual(by_sess["s1"]["turns"], 1)
+
     def test_expensive_prompts_orders_by_tokens(self):
         rows = expensive_prompts(self.db, limit=10)
         self.assertGreaterEqual(len(rows), 2)
@@ -217,12 +255,13 @@ class SummaryQueryTests(unittest.TestCase):
         with connect(self.db) as c:
             c.executescript("""
             INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, cwd, type, timestamp, model,
-              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens)
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
+              prompt_text)
             VALUES
-              ('u1',NULL,'s1','projA','/work/projA','user','2026-04-10T00:00:00Z',NULL,0,0,0,0,0),
-              ('a1','u1','s1','projA','/work/projA','assistant','2026-04-10T00:00:01Z','claude-opus-4-7',100,200,300,10,20),
-              ('u2',NULL,'s2','projB','/work/projB','user','2026-04-11T00:00:00Z',NULL,0,0,0,0,0),
-              ('a2','u2','s2','projB','/work/projB','assistant','2026-04-11T00:00:01Z','claude-sonnet-4-6',5,6,7,8,9);
+              ('u1',NULL,'s1','projA','/work/projA','user','2026-04-10T00:00:00Z',NULL,0,0,0,0,0,'hi A'),
+              ('a1','u1','s1','projA','/work/projA','assistant','2026-04-10T00:00:01Z','claude-opus-4-7',100,200,300,10,20,NULL),
+              ('u2',NULL,'s2','projB','/work/projB','user','2026-04-11T00:00:00Z',NULL,0,0,0,0,0,'hi B'),
+              ('a2','u2','s2','projB','/work/projB','assistant','2026-04-11T00:00:01Z','claude-sonnet-4-6',5,6,7,8,9,NULL);
             INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, timestamp, is_error)
             VALUES
               ('a1','s1','projA','Read','foo.py',50,'2026-04-10T00:00:01Z',0),

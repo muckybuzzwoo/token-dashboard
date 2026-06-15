@@ -220,15 +220,17 @@ def _project_slug(file_path: Path, projects_root: Path) -> str:
 def _evict_prior_snapshots_bulk(conn, keepers: List[Tuple[str, str, str]]) -> None:
     """Remove older streaming snapshots for many (session_id, message_id) pairs.
 
-    Claude Code writes 2–3 JSONL lines per assistant response (partial → final)
-    with identical message.id but distinct top-level uuids. Only the final
-    tally matches billing, so earlier snapshots must be replaced, not summed.
+    Claude Code writes several JSONL lines per assistant response sharing one
+    message.id but with distinct top-level uuids. Every sibling carries the
+    same final usage, so the message rows must be collapsed to one, not summed.
 
     ``keepers`` is a list of ``(session_id, message_id, keep_uuid)`` triples
     representing the final snapshot we are about to insert for each
-    ``(session_id, message_id)`` pair. We evict every prior row in the DB
-    that matches the pair but has a different uuid. One temp-table-driven
-    pass replaces N inline SELECT+DELETE round-trips.
+    ``(session_id, message_id)`` pair. For every prior DB row that matches the
+    pair but has a different uuid we re-point its tool_calls onto the keeper
+    (the siblings may hold distinct parallel tool_use blocks — issue #25) and
+    then delete the superseded message row. One temp-table-driven pass replaces
+    N inline SELECT+DELETE round-trips.
     """
     if not keepers:
         return
@@ -245,21 +247,62 @@ def _evict_prior_snapshots_bulk(conn, keepers: List[Tuple[str, str, str]]) -> No
         "INSERT OR REPLACE INTO _snap_keepers (session_id, message_id, keep_uuid) VALUES (?, ?, ?)",
         keepers,
     )
-    old = [r[0] for r in conn.execute(
-        "SELECT m.uuid FROM messages m "
+    pairs = [(r[0], r[1]) for r in conn.execute(
+        "SELECT m.uuid, k.keep_uuid FROM messages m "
         "JOIN _snap_keepers k "
         "  ON m.session_id = k.session_id AND m.message_id = k.message_id "
         "WHERE m.uuid != k.keep_uuid"
     )]
-    if old:
+    if pairs:
+        # Re-point the superseded siblings' tool_calls onto the surviving keeper
+        # rather than deleting them: in the current per-content-block format the
+        # siblings hold *distinct* parallel tool_use blocks, and the
+        # tool_calls→messages joins need message_uuid to resolve. Duplicate
+        # tool_use ids (true growing snapshots repeat a block) are collapsed by
+        # _dedupe_tool_calls after the insert.
+        conn.executemany(
+            "UPDATE tool_calls SET message_uuid = ? WHERE message_uuid = ?",
+            [(keep, old) for (old, keep) in pairs],
+        )
+        old_uuids = [old for (old, _keep) in pairs]
         # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999; chunk safely below it.
         chunk = 500
-        for i in range(0, len(old), chunk):
-            slab = old[i:i + chunk]
+        for i in range(0, len(old_uuids), chunk):
+            slab = old_uuids[i:i + chunk]
             ph = ",".join("?" * len(slab))
-            conn.execute(f"DELETE FROM tool_calls WHERE message_uuid IN ({ph})", slab)
-            conn.execute(f"DELETE FROM messages   WHERE uuid         IN ({ph})", slab)
+            conn.execute(f"DELETE FROM messages WHERE uuid IN ({ph})", slab)
     conn.execute("DELETE FROM _snap_keepers")
+
+
+def _dedupe_tool_calls(conn, keep_uuids) -> None:
+    """Collapse duplicate tool_use rows under a keeper message.
+
+    Re-pointing snapshot siblings onto the keeper can leave the same tool_use
+    block recorded more than once when the source was a true growing snapshot
+    (each partial repeats the block). Keep one row per
+    (message_uuid, tool_name, tool_use_id). Only rows carrying a tool_use id are
+    touched, so ``_tool_result`` rows and synthetic ``Skill`` rows (no id) are
+    left intact. All rows for a given message_uuid land in the same chunk, so
+    per-chunk grouping is exact.
+    """
+    if not keep_uuids:
+        return
+    uuids = list(keep_uuids)
+    chunk = 500
+    for i in range(0, len(uuids), chunk):
+        slab = uuids[i:i + chunk]
+        ph = ",".join("?" * len(slab))
+        conn.execute(
+            f"""DELETE FROM tool_calls
+                 WHERE message_uuid IN ({ph})
+                   AND tool_use_id IS NOT NULL
+                   AND id NOT IN (
+                     SELECT MIN(id) FROM tool_calls
+                      WHERE message_uuid IN ({ph}) AND tool_use_id IS NOT NULL
+                      GROUP BY message_uuid, tool_name, tool_use_id
+                   )""",
+            slab + slab,
+        )
 
 
 def _parse_file(path: Path, project_slug: str, start_byte: int = 0) -> dict:
@@ -314,21 +357,27 @@ def _parse_file(path: Path, project_slug: str, start_byte: int = 0) -> dict:
 
 def _dedupe_inflight_snapshots(
     messages: List[dict],
-) -> Tuple[List[dict], List[Tuple[str, str, str]]]:
+) -> Tuple[List[dict], List[Tuple[str, str, str]], dict]:
     """Within one batch of parsed messages, keep only the last uuid per
     (session_id, message_id), preserving order otherwise.
 
-    Returns (deduped_messages, keepers) where keepers is the list of
-    (session_id, message_id, keep_uuid) triples for the bulk evictor.
+    Returns (deduped_messages, keepers, uuid_to_keeper):
+      - keepers: (session_id, message_id, keep_uuid) triples for the bulk evictor.
+      - uuid_to_keeper: every record uuid in a message_id group → its keeper
+        uuid, so tool_calls carried by evicted siblings can be re-pointed at the
+        surviving row instead of dropped (issue #25 bug #1).
     """
     last_idx_by_key: dict = {}
+    members_by_key: dict = {}
     for i, m in enumerate(messages):
         mid = m["message_id"]
         if not mid:
             continue
-        last_idx_by_key[(m["session_id"], mid)] = i
+        key = (m["session_id"], mid)
+        last_idx_by_key[key] = i
+        members_by_key.setdefault(key, []).append(m["uuid"])
     if not last_idx_by_key:
-        return messages, []
+        return messages, [], {}
     keep_indices = set(last_idx_by_key.values())
     deduped: List[dict] = []
     for i, m in enumerate(messages):
@@ -337,7 +386,12 @@ def _dedupe_inflight_snapshots(
     keepers = [
         (sid, mid, messages[idx]["uuid"]) for (sid, mid), idx in last_idx_by_key.items()
     ]
-    return deduped, keepers
+    uuid_to_keeper: dict = {}
+    for key, members in members_by_key.items():
+        keep_uuid = messages[last_idx_by_key[key]]["uuid"]
+        for u in members:
+            uuid_to_keeper[u] = keep_uuid
+    return deduped, keepers, uuid_to_keeper
 
 
 def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
@@ -352,11 +406,12 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
     written. ``scan_dir`` uses these to invalidate the correct slices of
     the materialised summary tables.
 
-    Internally: parse all new lines into in-memory lists, dedupe streaming
-    snapshots within the batch, evict prior snapshots in one bulk pass,
-    then batch-write messages and tools via ``executemany``. Observable
-    behavior is identical to the prior per-row implementation; only
-    throughput differs (~33x on a cold scan of 1.0 GB / 200k messages).
+    Internally: parse all new lines into in-memory lists, collapse same
+    message.id snapshots to one row, re-point their tool_calls onto the
+    surviving keeper, batch-write via ``executemany``, evict prior snapshots,
+    then drop duplicate tool_use rows. Token totals match billing (siblings
+    repeat the final usage, never summed) while parallel tool_use blocks from
+    non-final siblings are preserved (issue #25 bug #1).
     """
     parsed = _parse_file(path, project_slug, start_byte=start_byte)
     msgs_batch: List[dict] = parsed["messages"]
@@ -367,14 +422,20 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
         return {"messages": 0, "tools": 0, "end_offset": end_offset,
                 "days": set(), "sessions": set()}
 
-    msgs_batch, keepers = _dedupe_inflight_snapshots(msgs_batch)
+    msgs_batch, keepers, uuid_to_keeper = _dedupe_inflight_snapshots(msgs_batch)
     keep_uuids = {m["uuid"] for m in msgs_batch}
-    tools_batch = [t for t in tools_batch if t["message_uuid"] in keep_uuids]
+    # Re-point each tool onto its group's surviving (keeper) message instead of
+    # dropping the evicted siblings' tools. Current Claude Code splits one
+    # response into disjoint per-content-block records, so parallel tool_use
+    # blocks live in non-final siblings; keeping them is what fixes the
+    # tool/skill undercount (issue #25 bug #1). message_uuid stays pointed at a
+    # real row so the tool_calls→messages joins still resolve.
+    for t in tools_batch:
+        t["message_uuid"] = uuid_to_keeper.get(t["message_uuid"], t["message_uuid"])
 
-    _evict_prior_snapshots_bulk(conn, keepers)
-
-    # tool_calls has no natural unique key; clear any prior rows for the uuids
-    # we are about to insert so full rescans stay idempotent.
+    # tool_calls has no natural unique key; clear any prior rows for the keeper
+    # uuids we are about to insert so full rescans stay idempotent. Done BEFORE
+    # the evict re-point below so it cannot clobber re-pointed sibling tools.
     uuids = list(keep_uuids)
     chunk = 500
     for i in range(0, len(uuids), chunk):
@@ -385,6 +446,12 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
     conn.executemany(INSERT_MSG, msgs_batch)
     if tools_batch:
         conn.executemany(INSERT_TOOL, tools_batch)
+
+    # Cross-batch: re-point any prior snapshot siblings' tools onto the new
+    # keeper and drop the superseded message rows. Then collapse the duplicate
+    # tool_use rows that re-pointing can create when a block was repeated.
+    _evict_prior_snapshots_bulk(conn, keepers)
+    _dedupe_tool_calls(conn, keep_uuids)
 
     # Reconstruct the day/session sets scan_dir needs for the materialised
     # summary rebuild. Done after dedupe so we never reference an evicted row.
