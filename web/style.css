@@ -183,6 +183,13 @@ button, select {
 button:hover, select:hover, input:hover { border-color: var(--border-2); }
 input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
 input:disabled { color: var(--muted); cursor: not-allowed; }
+/* Native date/time picker icon ships black — invert it so it's visible on the dark panel. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(1); opacity: .7; cursor: pointer;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 button.primary:hover { background: #5BA8FF; }
 button.ghost { background: transparent; color: var(--muted); }
