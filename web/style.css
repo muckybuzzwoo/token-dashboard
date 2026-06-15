@@ -212,6 +212,25 @@ button.ghost { background: transparent; color: var(--muted); }
   }
 }
 
+/* custom autocomplete (replaces native <datalist>: opens downward, bounded) */
+.ac { position: relative; display: inline-flex; }
+.ac-menu {
+  position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 50;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  max-height: 240px; overflow-y: auto; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+  font-size: 13px;
+}
+.ac-menu[hidden] { display: none; }
+.ac-item {
+  padding: 6px 10px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ac-item:hover, .ac-item.active { background: var(--accent); color: #fff; }
+.ac-more {
+  padding: 5px 10px; color: var(--muted); font-size: 11px;
+  border-top: 1px solid var(--border);
+}
+
 /* tip rows */
 .tip {
   border: 1px solid var(--border); border-radius: 8px;

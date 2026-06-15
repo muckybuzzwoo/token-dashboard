@@ -67,6 +67,20 @@ class ServerTests(unittest.TestCase):
         body = json.loads(self._get("/api/prompts?limit=10"))
         self.assertIsInstance(body, list)
 
+    def test_sessions_json_includes_cost(self):
+        body = json.loads(self._get("/api/sessions?limit=10"))
+        self.assertIsInstance(body, list)
+        self.assertEqual(len(body), 1)
+        row = body[0]
+        self.assertEqual(row["session_id"], "s")
+        # The fixture's single assistant turn (haiku, 1 in / 1 out) is priced,
+        # so cost is a non-negative number and the estimated flag is a bool.
+        self.assertIn("cost_usd", row)
+        self.assertIn("cost_estimated", row)
+        self.assertIsNotNone(row["cost_usd"])
+        self.assertGreaterEqual(row["cost_usd"], 0.0)
+        self.assertIsInstance(row["cost_estimated"], bool)
+
     def test_projects_json(self):
         body = json.loads(self._get("/api/projects"))
         self.assertIsInstance(body, list)

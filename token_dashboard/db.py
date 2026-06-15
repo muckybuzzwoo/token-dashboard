@@ -733,6 +733,36 @@ def recent_sessions(db_path, limit: int = 20, since=None, until=None) -> list:
     return rows
 
 
+def session_model_tokens(db_path, session_ids) -> dict:
+    """Per-(session, model) token sums for the given sessions.
+
+    Returns {session_id: [ {model, input_tokens, ...}, ... ]}. Reads from the
+    raw messages table (summary_sessions has no per-model breakdown), so the
+    caller can compute accurate cost across sessions that mix models.
+    """
+    ids = [s for s in session_ids if s]
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    sql = f"""
+      SELECT session_id,
+             COALESCE(model, 'unknown') AS model,
+             COALESCE(SUM(input_tokens),0)           AS input_tokens,
+             COALESCE(SUM(output_tokens),0)          AS output_tokens,
+             COALESCE(SUM(cache_read_tokens),0)      AS cache_read_tokens,
+             COALESCE(SUM(cache_create_5m_tokens),0) AS cache_create_5m_tokens,
+             COALESCE(SUM(cache_create_1h_tokens),0) AS cache_create_1h_tokens
+        FROM messages
+       WHERE session_id IN ({ph}) AND type = 'assistant'
+       GROUP BY session_id, COALESCE(model, 'unknown')
+    """
+    out: dict = {}
+    with connect(db_path) as c:
+        for r in c.execute(sql, ids):
+            out.setdefault(r["session_id"], []).append(dict(r))
+    return out
+
+
 def session_turns(db_path, session_id: str) -> list:
     sql = """
       SELECT uuid, parent_uuid, type, timestamp, model, is_sidechain, agent_id,
