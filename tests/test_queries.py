@@ -89,6 +89,50 @@ class QueryTests(unittest.TestCase):
         self.assertIn("real typed prompt", texts)
         self.assertNotIn("Base directory for this skill: ...", texts)
 
+    def test_expensive_prompts_skips_null_model_first_assistant(self):
+        # Regression: an API-error / synthetic assistant row (model NULL) can be
+        # the FIRST assistant in a prompt's window, followed by the real response.
+        # The displayed model must come from the real row, and the prompt must
+        # NOT be dropped by the outer `model IS NOT NULL` filter.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
+              prompt_text, prompt_chars, prompt_id, is_sidechain)
+            VALUES
+              ('u5',NULL,'s5','projE','user','2026-05-03T00:00:00Z',NULL,0,0,0,0,0,'retry prompt',12,'p5',0),
+              ('aerr','u5','s5','projE','assistant','2026-05-03T00:00:01Z',NULL,0,0,0,0,0,NULL,NULL,NULL,0),
+              ('a5','aerr','s5','projE','assistant','2026-05-03T00:00:02Z','claude-opus-4-8',10,20,5,0,0,NULL,NULL,NULL,0);
+            """)
+            c.commit()
+        row = next((r for r in expensive_prompts(self.db, sort="recent")
+                    if r["prompt_text"] == "retry prompt"), None)
+        self.assertIsNotNone(row, "prompt with a NULL-model first assistant was dropped")
+        self.assertEqual(row["model"], "claude-opus-4-8")   # not the leading NULL-model error row
+        self.assertEqual(row["billable_tokens"], 30)        # 10 + 20 (error row contributes 0)
+        self.assertEqual(row["cache_read_tokens"], 5)
+
+    def test_expensive_prompts_sums_multiple_assistants_in_window(self):
+        # The full turn's cost spans every main-thread assistant message between
+        # this prompt and the next (the tool loop), not just the first response.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
+              prompt_text, prompt_chars, prompt_id, is_sidechain)
+            VALUES
+              ('u6',NULL,'s6','projF','user','2026-05-04T00:00:00Z',NULL,0,0,0,0,0,'tool loop prompt',16,'p6',0),
+              ('a6a','u6','s6','projF','assistant','2026-05-04T00:00:01Z','claude-opus-4-8',10,20,1,0,0,NULL,NULL,NULL,0),
+              ('a6b','a6a','s6','projF','assistant','2026-05-04T00:00:02Z','claude-opus-4-8',5,7,2,0,0,NULL,NULL,NULL,0),
+              ('a6c','a6b','s6','projF','assistant','2026-05-04T00:00:03Z','claude-opus-4-8',3,4,3,0,0,NULL,NULL,NULL,0);
+            """)
+            c.commit()
+        row = next(r for r in expensive_prompts(self.db, sort="recent")
+                   if r["prompt_text"] == "tool loop prompt")
+        self.assertEqual(row["model"], "claude-opus-4-8")
+        self.assertEqual(row["billable_tokens"], 49)   # (10+20)+(5+7)+(3+4)
+        self.assertEqual(row["cache_read_tokens"], 6)   # 1+2+3
+
     def test_project_summary_groups(self):
         rows = project_summary(self.db)
         slugs = {r["project_slug"]: r for r in rows}

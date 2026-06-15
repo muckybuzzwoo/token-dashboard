@@ -576,7 +576,10 @@ def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens") -> list:
     then attribute every main-thread assistant message between this prompt and
     the next one to it. Sidechain (subagent) rows are excluded; their spend is
     the Subagents tab's concern. ``billable_tokens`` is therefore the full turn's
-    cost (incl. its tool loop), not just the first response.
+    cost (incl. its tool loop), not just the first response. The displayed
+    ``model`` is the first assistant in the window that *has* a model, so a
+    leading API-error row (``model`` NULL) neither sets the label nor drops the
+    prompt via the outer ``model IS NOT NULL`` filter.
     """
     order = "timestamp DESC" if sort == "recent" else "billable_tokens DESC"
     # Window predicate shared by the three correlated aggregates below.
@@ -600,7 +603,7 @@ def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens") -> list:
         SELECT pr.uuid AS user_uuid, pr.session_id, pr.project_slug, pr.timestamp,
                pr.prompt_text, pr.prompt_chars,
                (SELECT a.model FROM messages a
-                 WHERE {win} ORDER BY a.timestamp LIMIT 1) AS model,
+                 WHERE {win} AND a.model IS NOT NULL ORDER BY a.timestamp LIMIT 1) AS model,
                COALESCE((SELECT SUM(COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
                           +COALESCE(a.cache_create_5m_tokens,0)+COALESCE(a.cache_create_1h_tokens,0))
                  FROM messages a WHERE {win}), 0) AS billable_tokens,
