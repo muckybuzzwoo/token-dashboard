@@ -187,5 +187,131 @@ class StreamingDedupTests(unittest.TestCase):
         self.assertEqual([r["uuid"] for r in rows], ["a1", "a2"])
 
 
+def _disjoint(uuid, msg_id, session, ts, block, out=300):
+    """One assistant record carrying a single content block. Siblings share a
+    message.id and all carry the SAME final usage — the current Claude Code
+    per-content-block format (not growing snapshots)."""
+    return {
+        "type": "assistant", "uuid": uuid, "parentUuid": "u1",
+        "sessionId": session, "timestamp": ts, "isSidechain": False,
+        "message": {
+            "id": msg_id, "model": "claude-opus-4-7",
+            "content": [block],
+            "usage": {
+                "input_tokens": 100, "output_tokens": out,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                   "ephemeral_1h_input_tokens": 0},
+            },
+        },
+    }
+
+
+_THINK = {"type": "thinking", "thinking": "hmm"}
+_READ = {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"file_path": "foo.py"}}
+_GREP = {"type": "tool_use", "id": "tu2", "name": "Grep", "input": {"pattern": "bar"}}
+
+
+class DisjointFormatTests(unittest.TestCase):
+    """Current Claude Code splits one response into disjoint per-content-block
+    records sharing a message.id. Collapsing to the last record must keep the
+    token total right (siblings repeat the final usage) WITHOUT discarding the
+    parallel tool_use blocks that live in the non-final siblings (issue #25)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        self.proj_root = os.path.join(self.tmp, "projects")
+        self.proj_dir = os.path.join(self.proj_root, "C--work-sample")
+        os.makedirs(self.proj_dir)
+        init_db(self.db)
+
+    def _path(self):
+        return os.path.join(self.proj_dir, "s1.jsonl")
+
+    def _assistants_and_tools(self):
+        with sqlite3.connect(self.db) as c:
+            c.row_factory = sqlite3.Row
+            asg = c.execute(
+                "SELECT uuid, input_tokens, output_tokens FROM messages WHERE type='assistant'"
+            ).fetchall()
+            tools = c.execute(
+                "SELECT message_uuid, tool_name, tool_use_id FROM tool_calls "
+                "WHERE tool_name IN ('Read','Grep') ORDER BY tool_name"
+            ).fetchall()
+        return asg, tools
+
+    def test_disjoint_blocks_keep_all_tool_calls(self):
+        user = {"type": "user", "uuid": "u1", "sessionId": "s1",
+                "timestamp": "2026-04-10T00:00:00Z", "isSidechain": False,
+                "message": {"role": "user", "content": "do X"}}
+        _write_jsonl(self._path(), [
+            user,
+            _disjoint("a_think", "msg_D", "s1", "2026-04-10T00:00:01Z", _THINK),
+            _disjoint("a_read",  "msg_D", "s1", "2026-04-10T00:00:02Z", _READ),
+            _disjoint("a_grep",  "msg_D", "s1", "2026-04-10T00:00:03Z", _GREP),  # keeper
+        ])
+        scan_dir(self.proj_root, self.db)
+
+        asg, tools = self._assistants_and_tools()
+        # Tokens: collapse to ONE row carrying the final usage, not the 3x sum.
+        self.assertEqual(len(asg), 1)
+        self.assertEqual(asg[0]["uuid"], "a_grep")
+        self.assertEqual(asg[0]["output_tokens"], 300)
+        self.assertEqual(asg[0]["input_tokens"], 100)
+        # Bug #1: BOTH parallel tool_use blocks survive, attributed to the keeper.
+        self.assertEqual({t["tool_name"] for t in tools}, {"Read", "Grep"})
+        self.assertEqual({t["tool_use_id"] for t in tools}, {"tu1", "tu2"})
+        self.assertTrue(all(t["message_uuid"] == "a_grep" for t in tools))
+
+    def test_disjoint_blocks_incremental_keep_all_tool_calls(self):
+        import json as _json
+        user = {"type": "user", "uuid": "u1", "sessionId": "s1",
+                "timestamp": "2026-04-10T00:00:00Z", "isSidechain": False,
+                "message": {"role": "user", "content": "do X"}}
+        _write_jsonl(self._path(), [
+            user,
+            _disjoint("a_think", "msg_D", "s1", "2026-04-10T00:00:01Z", _THINK),
+            _disjoint("a_read",  "msg_D", "s1", "2026-04-10T00:00:02Z", _READ),
+        ])
+        scan_dir(self.proj_root, self.db)
+        with open(self._path(), "a", encoding="utf-8") as f:
+            f.write(_json.dumps(
+                _disjoint("a_grep", "msg_D", "s1", "2026-04-10T00:00:03Z", _GREP)) + "\n")
+        scan_dir(self.proj_root, self.db)
+
+        asg, tools = self._assistants_and_tools()
+        self.assertEqual(len(asg), 1)
+        self.assertEqual(asg[0]["uuid"], "a_grep")
+        self.assertEqual(asg[0]["output_tokens"], 300)
+        # The Read tool_use from the earlier scan must NOT be lost when the
+        # final sibling lands in a later scan.
+        self.assertEqual({t["tool_name"] for t in tools}, {"Read", "Grep"})
+        self.assertTrue(all(t["message_uuid"] == "a_grep" for t in tools))
+
+    def test_full_rescan_is_idempotent(self):
+        user = {"type": "user", "uuid": "u1", "sessionId": "s1",
+                "timestamp": "2026-04-10T00:00:00Z", "isSidechain": False,
+                "message": {"role": "user", "content": "do X"}}
+        _write_jsonl(self._path(), [
+            user,
+            _disjoint("a_think", "msg_D", "s1", "2026-04-10T00:00:01Z", _THINK),
+            _disjoint("a_read",  "msg_D", "s1", "2026-04-10T00:00:02Z", _READ),
+            _disjoint("a_grep",  "msg_D", "s1", "2026-04-10T00:00:03Z", _GREP),
+        ])
+        scan_dir(self.proj_root, self.db)
+        # Force a full re-read of the same bytes by forgetting the file offset.
+        with sqlite3.connect(self.db) as c:
+            c.execute("DELETE FROM files")
+            c.commit()
+        scan_dir(self.proj_root, self.db)
+
+        asg, tools = self._assistants_and_tools()
+        self.assertEqual(len(asg), 1, "rescan must not duplicate the collapsed row")
+        self.assertEqual(asg[0]["output_tokens"], 300)
+        self.assertEqual(len(tools), 2, "rescan must not duplicate tool_calls")
+        self.assertEqual({t["tool_use_id"] for t in tools}, {"tu1", "tu2"})
+
+
 if __name__ == "__main__":
     unittest.main()
