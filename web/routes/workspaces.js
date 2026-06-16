@@ -58,9 +58,16 @@ export default async function (root) {
 
     <div class="card" style="margin-top:16px">
       <h3>Workspace flow — agent cwd (left) → file target (right)</h3>
-      <p class="muted" style="margin:-4px 0 14px;font-size:12px">
-        Bipartite Sankey: left column = where the session ran, right column = which workspace's files it touched. Same-name pairs (e.g. <code>token-dashboard-mucky (agent) → token-dashboard-mucky (files)</code>) are within-workspace work. Cross-pairs are the consolidation candidates. Only Read/Edit/Write/NotebookEdit counted (${matrix.tools_considered.join(', ')}).
-      </p>
+      <details class="glossary" style="margin:-4px 0 14px">
+        <summary><span style="font-size:12px">Spots when work done in one project touched files in another</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+        <dl>
+          <dt>Left side</dt><dd>The project folder the session was running in.</dd>
+          <dt>Right side</dt><dd>The project whose files it actually read or edited.</dd>
+          <dt>Same-name pair</dt><dd>Normal — the session stayed in its own project (e.g. <code>token-dashboard-mucky (agent) → token-dashboard-mucky (files)</code>).</dd>
+          <dt>Cross pair</dt><dd>A session in project A edited files in project B. Worth a look — maybe the wrong directory, or two projects that should be merged.</dd>
+          <dt>File tools only</dt><dd>Counts Read/Edit/Write/NotebookEdit (currently: ${matrix.tools_considered.join(', ')}).</dd>
+        </dl>
+      </details>
       <div id="ch-workspaces" class="blur-sensitive" style="height:560px"></div>
     </div>
 

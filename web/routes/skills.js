@@ -75,14 +75,22 @@ function renderSkills(root, skills, range) {
 
     <div class="card" style="margin-top:16px">
       <h3>All skills &amp; commands</h3>
-      <p class="muted" style="margin:-4px 0 14px;font-size:12px">
-        <strong>You ran</strong> = distinct sessions where you typed the slash command (tracked via Claude Code's <code>attributionSkill</code> field on assistant turns).
-        <strong>Claude invoked</strong> = times Claude called the Skill tool mid-conversation (typically from Task/Agent-dispatched subagents).
-        <strong>Tokens per call</strong> = size of the skill's <code>SKILL.md</code> file loaded into context per invocation (slash commands show — when no matching SKILL.md exists in the catalog).
-        <strong>Budget</strong> / <strong>p50 out</strong> / <strong>p95 out</strong> track the skill's <em>output</em> footprint: budget is parsed from the <code>SKILL.md</code> body; p50/p95 sum <code>output_tokens</code> from the Skill call until the user types again or another Skill runs, excluding sidechain subagents.
-        Red means p50 exceeds budget by more than 20%.
-        <strong>Total $</strong> is the cost the skill itself emitted across this range. <strong>Total inc. subagents</strong> adds the cost of any <code>Task</code>/<code>Agent</code>-dispatched subagents whose parent chain traces back into the skill's window.
-      </p>
+      <details class="glossary glossary--legend" style="margin:-4px 0 14px">
+        <summary><strong style="font-size:12px">Column guide</strong><span class="muted" style="font-size:12px">— click to expand</span></summary>
+        <p class="muted" style="margin:14px 0 0;font-size:12px">Ranks your skills &amp; slash commands by cost. Use it to spot which ones are worth trimming — the ones that run often, or write far more than they promised.</p>
+        <dl>
+          <dt>You ran</dt><dd>How many of your sessions started this because <em>you</em> typed the slash command (e.g. <code>/commit</code>).</dd>
+          <dt>Claude invoked</dt><dd>How many times <em>Claude</em> started it on its own, mid-conversation — usually inside a subagent it dispatched. So: "You ran" = you triggered it, "Claude invoked" = Claude did.</dd>
+          <dt>Tokens per call</dt><dd>How big the skill's instruction file (<code>SKILL.md</code>) is. The whole file is loaded into context every time the skill runs — so a 3,000-token skill costs you 3,000 input tokens per use before Claude writes anything. Plain slash commands with no instruction file show —.</dd>
+          <dt>Budget</dt><dd>An output limit the skill's <em>author</em> wrote into the skill itself (e.g. "Complete in &lt;2,000 output tokens"). A self-declared target, not a hard cap. Most skills don't declare one → —.</dd>
+          <dt>p50 / p95 out</dt><dd>How much the skill actually writes per run. <strong>p50</strong> = the typical run (half were smaller, half bigger); <strong>p95</strong> = a near-worst case (only 1 run in 20 was bigger). Counts everything Claude emits — visible text <em>plus</em> tool calls and thinking — so it's normally higher than the declared budget, which usually means text only.</dd>
+          <dt>Red badge</dt><dd>Shows when the typical run (p50) is more than 20% over the declared budget. The skill routinely writes more than it promised — a candidate to trim.</dd>
+          <dt>Total $</dt><dd>What this skill alone cost over the selected range (its own output, not its helpers).</dd>
+          <dt>Total inc. subagents</dt><dd>The same, plus any helper subagents the skill spun up. The gap between the two columns shows how much of a skill's cost hides in the subagents it dispatches.</dd>
+          <dt>Sessions</dt><dd>In how many separate sessions this skill showed up.</dd>
+          <dt>Last used</dt><dd>When it last ran.</dd>
+        </dl>
+      </details>
       <table id="skills-table">
         <thead><tr>
           <th>skill / command</th>

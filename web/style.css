@@ -361,6 +361,8 @@ hr.divider { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
   margin: 14px 0 0; display: grid;
   grid-template-columns: 160px 1fr; gap: 10px 20px;
 }
+/* wider term column for table-column legends (longer terms like "Total inc. subagents") */
+.glossary--legend dl { grid-template-columns: 180px 1fr; }
 .glossary dt {
   color: var(--text); font-weight: 600; font-size: 12px;
   text-transform: uppercase; letter-spacing: 0.04em;
