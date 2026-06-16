@@ -1,6 +1,6 @@
 # Fork notes
 
-> **Last updated:** 2026-06-15 (v0.3.1: scanner now accounts correctly for the per-content-block transcript format — tool/skill counts and turns were wrong; community PRs #3–#6 in v0.3.0) — see [recent commits](https://github.com/muckybuzzwoo/token-dashboard/commits/main) for the running change log.
+> **Last updated:** 2026-06-16 (v0.4.0: plain-language, collapsible in-app metric explanations across Prompts / Skills / Subagents / Workspaces, a `<synthetic>`-row note, and a clarified Settings plan text; corrected Team plan monthly prices. v0.3.1: scanner per-content-block accounting fix) — see [recent commits](https://github.com/muckybuzzwoo/token-dashboard/commits/main) for the running change log.
 
 This fork integrates community pull requests that have not been merged into the upstream [nateherkai/token-dashboard](https://github.com/nateherkai/token-dashboard) repository, because upstream is currently inactive.
 
