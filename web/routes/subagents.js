@@ -100,16 +100,28 @@ export default async function (root) {
     <div class="row cols-2" style="margin-top:16px">
       <div class="card">
         <h3>Per-model split by agent kind</h3>
-        <p class="muted" style="margin:-4px 0 14px;font-size:12px">
-          Three-way split: <b>main</b> = top-level conversation; <b>auto-compaction</b> = Claude Code's internal context-summarizer (agent_id <code>acompact-*</code>); <b>Task subagent</b> = explicitly dispatched via the Task/Agent tool. The previous "sidechain" bucket lumped compaction + Task together — they have different cost profiles and different fix paths.
-        </p>
+        <details class="glossary" style="margin:-4px 0 14px">
+          <summary><span style="font-size:12px">Where your tokens go, by who's doing the work (the bars below)</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+          <dl>
+            <dt>main thread</dt><dd>Your actual back-and-forth with Claude — the work you directly drive.</dd>
+            <dt>auto-compaction</dt><dd>Background summarizing Claude Code does on its own when a session gets too long to fit in context. You don't trigger it, but it costs tokens — high numbers mean long sessions are getting summarized a lot. No bar here means none happened in the selected range.</dd>
+            <dt>Task subagent</dt><dd>Helpers Claude launches (via the Task/Agent tool) for a focused or parallel job. They run their own conversation and bill separately.</dd>
+          </dl>
+        </details>
         <div id="ch-kind" style="height:340px"></div>
       </div>
       <div class="card">
         <h3>Per-model split by entrypoint</h3>
-        <p class="muted" style="margin:-4px 0 14px;font-size:12px">
-          How the agent was launched: <code>cli</code> (terminal claude), <code>claude-vscode</code> (IDE), <code>sdk-py</code>/<code>sdk-ts</code>/<code>sdk-cli</code> (external orchestration — scripts invoking models directly via the Agent SDK).
-        </p>
+        <details class="glossary" style="margin:-4px 0 14px">
+          <summary><span style="font-size:12px">How each session was started — the client Claude Code recorded</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+          <dl>
+            <dt>cli</dt><dd>You ran <code>claude</code> in a terminal.</dd>
+            <dt>claude-desktop</dt><dd>You used the Claude Code desktop app (Mac/Windows).</dd>
+            <dt>claude-vscode</dt><dd>You used the VS Code / IDE integration.</dd>
+            <dt>sdk-*</dt><dd>A script started it, not you — code calling the Agent SDK directly: <code>sdk-py</code> (Python), <code>sdk-ts</code> (TypeScript), <code>sdk-cli</code>. If you see these and didn't write such a script, it's automation running on your account.</dd>
+            <dt>other</dt><dd>The value is taken straight from the session record, so any other client label (or a blank one) can show up here too.</dd>
+          </dl>
+        </details>
         <div id="ch-entrypoint" class="blur-sensitive" style="height:340px"></div>
       </div>
     </div>
@@ -146,6 +158,18 @@ export default async function (root) {
 
     <div class="card" style="margin-top:16px">
       <h3>Per-(kind, model) breakdown table</h3>
+      <details class="glossary" style="margin:-4px 0 14px">
+        <summary><span style="font-size:12px">The numbers behind the charts above — one row per kind × model</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+        <dl>
+          <dt>kind</dt><dd>Who did the work — main thread, auto-compaction, or Task subagent (see "Per-model split by agent kind" above).</dd>
+          <dt>model</dt><dd>The model that ran.</dd>
+          <dt>messages</dt><dd>How many assistant messages this kind × model produced.</dd>
+          <dt>sessions</dt><dd>How many distinct sessions it appeared in.</dd>
+          <dt>input + output</dt><dd>Fresh input plus generated output tokens — the part billed at the full rate.</dd>
+          <dt>cache read</dt><dd>Context re-used from cache, billed ~10× cheaper than fresh input.</dd>
+          <dt>cost (est.)</dt><dd>Estimated dollar cost for this row. A <code>~</code> means the price was estimated from the model tier.</dd>
+        </dl>
+      </details>
       <table>
         <thead><tr>
           <th>kind</th>
@@ -173,9 +197,21 @@ export default async function (root) {
 
     <div class="card" style="margin-top:16px">
       <h3>Dispatch tree — parent prompt → spawned subagent threads</h3>
-      <p class="muted" style="margin:-4px 0 14px;font-size:12px">
-        Each row is one <code>Agent</code> (formerly <code>Task</code>) tool call: the dispatcher model is the main thread that issued the dispatch; the child models are the subagent thread that ran. Reconstruction is via timing-join on session_id + first-sidechain-after-tool-call (~&lt;1s gap). Sort by total child token spend.
-      </p>
+      <details class="glossary" style="margin:-4px 0 14px">
+        <summary><span style="font-size:12px">Each row = one time the main conversation handed a job to a subagent, and what it cost</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+        <dl>
+          <dt>dispatcher (main)</dt><dd>The model in your main conversation that decided to delegate.</dd>
+          <dt>child (subagent)</dt><dd>The model that actually ran the delegated job.</dd>
+          <dt>subagent_type</dt><dd>The kind of agent that was dispatched (e.g. <code>Explore</code>, <code>claude-code-guide</code>), or — if it wasn't tagged.</dd>
+          <dt>session</dt><dd>Which session this happened in (first 8 characters; hover for the full id).</dd>
+          <dt>workspace</dt><dd>The project the main conversation was working in.</dd>
+          <dt>child msgs</dt><dd>How many messages the subagent thread produced.</dd>
+          <dt>i/o tokens</dt><dd>The subagent's input + output tokens combined.</dd>
+          <dt>child cost</dt><dd>What the subagent thread cost. A <code>~</code> means the price was estimated from the model tier.</dd>
+          <dt>when</dt><dd>When the main conversation dispatched the job.</dd>
+        </dl>
+        <p class="muted" style="margin:10px 0 0;font-size:11px;opacity:0.8">Sorted by child token spend (biggest first). How they're linked: timing — a subagent that starts within ~1s of a dispatch call.</p>
+      </details>
       <table>
         <thead><tr>
           <th>dispatcher (main)</th>
@@ -209,9 +245,17 @@ export default async function (root) {
 
     <div class="card" style="margin-top:16px">
       <h3>Top sessions by subagent token spend</h3>
-      <p class="muted" style="margin:-4px 0 14px;font-size:12px">
-        Click a row to drill into the session view.
-      </p>
+      <details class="glossary" style="margin:-4px 0 14px">
+        <summary><span style="font-size:12px">Sessions where subagent work cost the most</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+        <dl>
+          <dt>project</dt><dd>The workspace the session ran in.</dd>
+          <dt>session</dt><dd>The session id (first 8 characters; hover for the full id). Click any row to open the full session view.</dd>
+          <dt>subagent msgs</dt><dd>How many messages the session's subagents produced.</dd>
+          <dt>i/o tokens</dt><dd>Those subagents' input + output tokens combined.</dd>
+          <dt>cache read</dt><dd>Cached tokens the subagents reused — context they'd already seen, billed far cheaper than fresh input.</dd>
+          <dt>models seen</dt><dd>Which models the subagents ran on.</dd>
+        </dl>
+      </details>
       <table>
         <thead><tr>
           <th>project</th>

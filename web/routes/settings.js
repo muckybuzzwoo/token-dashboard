@@ -10,7 +10,7 @@ export default async function (root) {
     <div class="card">
       <h2>Settings</h2>
       <h3 style="margin-top:16px">Plan</h3>
-      <p class="muted" style="margin:0 0 12px">Sets how cost is displayed. API mode shows pay-per-token rates. Subscription modes show what you actually pay each month.</p>
+      <p class="muted" style="margin:0 0 12px">Changes how costs are labelled, not the numbers. The dollar figures shown everywhere are always the <strong>API pay-per-token value</strong> of your usage.<br>Picking a subscription keeps those same figures and just shows your <strong>flat monthly fee</strong> next to them — handy for checking whether your usage is worth more than you pay.</p>
       <div class="flex">
         <select id="plan" class="blur-sensitive">
           ${plans.map(([k,v]) => `<option value="${k}" ${k===cur.plan?'selected':''}>${v.label}${v.monthly?` — $${v.monthly}/mo`:''}</option>`).join('')}

@@ -97,11 +97,11 @@
       "label": "Max 20x"
     },
     "team": {
-      "monthly": 20,
+      "monthly": 25,
       "label": "Team Standard"
     },
     "team-premium": {
-      "monthly": 100,
+      "monthly": 125,
       "label": "Team Premium"
     }
   }

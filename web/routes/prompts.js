@@ -50,7 +50,18 @@ function renderPrompts(root, rows, sort) {
     </div>
 
     <div class="card">
-      <p class="muted" style="margin:0 0 14px">${subtitle}</p>
+      <details class="glossary glossary--legend" style="margin:0 0 14px">
+        <summary><span style="font-size:12px">${subtitle}</span><span class="muted" style="font-size:12px">— click to expand</span></summary>
+        <dl>
+          <dt>when / cache cost</dt><dd>In <em>Most recent</em> this is when you sent the prompt; in <em>Most tokens</em> it's the <strong>cache cost</strong> — the dollar cost of just the cache-read tokens for that turn. Shows — when the model can't be priced.</dd>
+          <dt>prompt</dt><dd>The text you typed. Click any row to see the full prompt.</dd>
+          <dt>model</dt><dd>The model that answered this prompt (the first real model in the turn).</dd>
+          <dt>tokens</dt><dd>Billable tokens for the whole turn — input + output + cache creation, including the tool loop it triggered (not just the first reply).</dd>
+          <dt>cache rd</dt><dd>Cache-read tokens: earlier context re-used from cache, billed ~10× cheaper than fresh input.</dd>
+          <dt>session</dt><dd>The session this prompt belongs to; click to open the full session view.</dd>
+        </dl>
+        <p class="muted" style="margin:10px 0 0;font-size:11px;opacity:0.8">Rows with model <code>&lt;synthetic&gt;</code> and no cost are Claude Code's automatic "Continue from where you left off." turns — placeholders it inserts after a session resume or auto-compaction, not real prompts. They still carry token counts (mostly re-read context), but there's no real model behind them, so no price is shown.</p>
+      </details>
       <table id="prompts">
         <thead><tr>
           <th>${sort.key === 'recent' ? 'when' : 'cache cost'}</th>
