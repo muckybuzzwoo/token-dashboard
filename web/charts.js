@@ -1,5 +1,11 @@
 // charts.js — themed ECharts wrappers
 
+// fmt.htmlSafe escapes user-controlled strings (workspace/directory names,
+// model ids) before they land in tooltip HTML. app.js imports charts.js too,
+// but this binding is only read at chart-render time — long after app.js has
+// finished evaluating — so the circular import is safe.
+import { fmt } from '/web/app.js';
+
 // All live instances + their ResizeObservers are tracked so render() can
 // fully tear them down before clearing the DOM. Without disconnect(), ROs
 // stay registered with the browser, holding closures to disposed charts —
@@ -181,9 +187,9 @@ export function sankeyChart(el, { nodes, links, formatter }) {
       formatter: p => {
         const v = formatter ? formatter(p.value) : Number(p.value).toLocaleString();
         if (p.dataType === 'edge') {
-          return `${p.data.source} → ${p.data.target}<br/><b>${v}</b>`;
+          return `${fmt.htmlSafe(p.data.source)} → ${fmt.htmlSafe(p.data.target)}<br/><b>${v}</b>`;
         }
-        return `<b>${p.name}</b><br/>${v}`;
+        return `<b>${fmt.htmlSafe(p.name)}</b><br/>${v}`;
       },
     },
     series: [{
@@ -211,7 +217,7 @@ export function donutChart(el, data) {
       trigger: 'item',
       backgroundColor: '#0F1419', borderColor: '#283040', borderWidth: 1,
       textStyle: { color: '#E6EDF3', fontFamily: 'Inter' },
-      formatter: p => `${p.name}<br/><b>${Number(p.value).toLocaleString()}</b> tokens (${p.percent.toFixed(1)}%)`,
+      formatter: p => `${fmt.htmlSafe(p.name)}<br/><b>${Number(p.value).toLocaleString()}</b> tokens (${p.percent.toFixed(1)}%)`,
     },
     legend: {
       textStyle: { color: '#8B98A6' },
