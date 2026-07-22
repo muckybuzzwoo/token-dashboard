@@ -2,6 +2,9 @@ import { api, fmt, makeSortable, cacheGet, cacheSet } from '/web/app.js';
 import { barChart, groupedBarChart } from '/web/charts.js';
 
 const RANGES = [
+  { key: '1d',  label: '1d',  days: 1 },
+  { key: '2d',  label: '2d',  days: 2 },
+  { key: '3d',  label: '3d',  days: 3 },
   { key: '7d',  label: '7d',  days: 7 },
   { key: '30d', label: '30d', days: 30 },
   { key: '90d', label: '90d', days: 90 },
@@ -12,7 +15,7 @@ function readRange() {
   const q = (location.hash.split('?')[1] || '');
   const m = /(?:^|&)range=([^&]+)/.exec(q);
   const k = m && decodeURIComponent(m[1]);
-  return RANGES.find(r => r.key === k) || RANGES[1];
+  return RANGES.find(r => r.key === k) || RANGES.find(r => r.key === '30d');
 }
 
 function writeRange(key) {
