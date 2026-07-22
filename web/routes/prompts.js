@@ -14,8 +14,9 @@ function readSort() {
 }
 
 function writeSort(key) {
-  const base = (location.hash.replace(/^#/, '').split('?')[0]) || '/prompts';
-  location.hash = '#' + base + '?sort=' + encodeURIComponent(key);
+  // Hardcoded base, not re-extracted from the current hash — matches
+  // workspaces.js/subagents.js after the code-review audit.
+  location.hash = '#/prompts?sort=' + encodeURIComponent(key);
 }
 
 export default async function (root) {

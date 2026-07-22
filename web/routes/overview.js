@@ -19,8 +19,9 @@ function readRange() {
 }
 
 function writeRange(key) {
-  const base = (location.hash.replace(/^#/, '').split('?')[0]) || '/overview';
-  location.hash = '#' + base + '?range=' + encodeURIComponent(key);
+  // Hardcoded base, not re-extracted from the current hash — matches
+  // workspaces.js/subagents.js after the code-review audit.
+  location.hash = '#/overview?range=' + encodeURIComponent(key);
 }
 
 function sinceIso(range) {
