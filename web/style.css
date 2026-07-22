@@ -293,6 +293,17 @@ button.ghost { background: transparent; color: var(--muted); }
 .badge-warning { color: #e0a800;         border-color: rgba(224,168,0,0.3);  background: rgba(224,168,0,0.08); }
 .badge-cost    { color: var(--good);     border-color: rgba(63,182,139,0.3); background: rgba(63,182,139,0.08); }
 
+/* grouped-tip instance list */
+.tip-instances { margin: 12px 0 0; }
+.tip-instances > ul { list-style: none; margin: 10px 0 0; padding: 0; }
+.tip-instance {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.tip-instance-title { font-size: 13px; }
+.tip-instance .tip-links { margin: 0; }
+.tip-instance .spacer, .tip-instance button.ghost { margin-left: auto; }
+
 /* time-range tabs */
 .range-tabs { display: inline-flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
 .range-tabs button {

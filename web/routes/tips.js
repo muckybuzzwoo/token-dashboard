@@ -38,6 +38,47 @@ function severityClass(sev) {
   return (sev === 'warning' || sev === 'cost' || sev === 'info') ? sev : 'info';
 }
 
+function renderInstances(instances) {
+  const rows = instances.map(i => {
+    const links = renderLinks(i.links);
+    return `
+      <li class="tip-instance">
+        <span class="tip-instance-title blur-sensitive">${fmt.htmlSafe(i.title)}</span>
+        ${links}
+        <button class="ghost" data-key="${fmt.htmlSafe(i.key)}">dismiss</button>
+      </li>`;
+  }).join('');
+  return `
+    <details class="glossary tip-instances">
+      <summary><span class="muted" style="font-size:12px">Show all ${instances.length}</span></summary>
+      <ul>${rows}</ul>
+    </details>`;
+}
+
+function renderTip(t) {
+  const sev = severityClass(t.severity);
+  const grouped = Array.isArray(t.instances) && t.instances.length > 0;
+  const savings = (typeof t.estimated_savings_usd === 'number' && t.estimated_savings_usd > 0)
+    ? `<span class="muted blur-sensitive" style="font-size:11px">~${fmt.usd(t.estimated_savings_usd)}/wk</span>`
+    : '';
+  const count = grouped ? `<span class="muted" style="font-size:12px">(${t.instances.length})</span>` : '';
+  const headDismiss = grouped ? '' : `<button class="ghost" data-key="${fmt.htmlSafe(t.key)}">dismiss</button>`;
+  return `
+    <div class="tip tip-${sev}">
+      <div class="tip-head">
+        <span class="badge badge-${sev}">${fmt.htmlSafe(t.category)}</span>
+        <strong class="blur-sensitive">${fmt.htmlSafe(t.title)}</strong>
+        ${count}
+        ${savings}
+        <span class="spacer"></span>
+        ${headDismiss}
+      </div>
+      <p class="tip-body">${fmt.htmlSafe(t.body)}</p>
+      ${renderLinks(t.links)}
+      ${grouped ? renderInstances(t.instances) : ''}
+    </div>`;
+}
+
 function renderTips(root, tips) {
   root.innerHTML = `
     <div class="card">
@@ -45,24 +86,7 @@ function renderTips(root, tips) {
       ${tips.length === 0
         ? '<p class="muted">No suggestions right now. Token Dashboard surfaces patterns weekly — check back after more activity.</p>'
         : `<p class="muted" style="margin:-8px 0 14px">Rule-based pattern detection over the last 7 days (skill budget &amp; CLAUDE.md size are live filesystem checks). Dismissed tips re-appear after 14 days.</p>`}
-      ${tips.map(t => {
-        const sev = severityClass(t.severity);
-        const savings = (typeof t.estimated_savings_usd === 'number' && t.estimated_savings_usd > 0)
-          ? `<span class="muted blur-sensitive" style="font-size:11px">~${fmt.usd(t.estimated_savings_usd)}/wk</span>`
-          : '';
-        return `
-        <div class="tip tip-${sev}">
-          <div class="tip-head">
-            <span class="badge badge-${sev}">${fmt.htmlSafe(t.category)}</span>
-            <strong class="blur-sensitive">${fmt.htmlSafe(t.title)}</strong>
-            ${savings}
-            <span class="spacer"></span>
-            <button class="ghost" data-key="${fmt.htmlSafe(t.key)}">dismiss</button>
-          </div>
-          <p class="tip-body">${fmt.htmlSafe(t.body)}</p>
-          ${renderLinks(t.links)}
-        </div>`;
-      }).join('')}
+      ${tips.map(renderTip).join('')}
     </div>`;
 
   root.querySelectorAll('button[data-key]').forEach(b => {
@@ -72,7 +96,7 @@ function renderTips(root, tips) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: b.dataset.key }),
       });
-      cacheClear(); // server also clears its cache on dismiss
+      cacheClear();
       location.reload();
     });
   });
