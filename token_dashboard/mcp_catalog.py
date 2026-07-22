@@ -10,17 +10,11 @@ it shows up on the next scan.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from .jsonutil import read_json_dict as _read_json
+
 CLAUDE_JSON = Path.home() / ".claude.json"
-
-
-def _read_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
 
 
 def _entry(name: str, cfg: dict, kind: str, source: str, file_path: str | None) -> dict:

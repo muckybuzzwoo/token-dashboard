@@ -1,9 +1,10 @@
 """Hooks / commands / agents catalog -- the smaller 'operational' gallery."""
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
+
+from .jsonutil import read_json_dict as _read_json
 
 CLAUDE_DIR = Path.home() / ".claude"
 SETTINGS_JSON = CLAUDE_DIR / "settings.json"
@@ -13,13 +14,6 @@ COMMANDS_DIR = CLAUDE_DIR / "commands"
 # keep their drive when extracted -- without it, Path(path).is_file() checks
 # the wrong drive (whichever one happens to be the current working directory's).
 _SCRIPT_RE = re.compile(r"((?:[A-Za-z]:)?/[^\s\"']+\.(?:sh|py|mjs|js|ps1))")
-
-
-def _read_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
 
 
 def scan_hooks() -> list:
