@@ -317,6 +317,45 @@ class SummaryQueryTests(unittest.TestCase):
         projects = project_summary(self.db, since="2026-04-11T00:00:00Z")
         self.assertEqual([r["project_slug"] for r in projects], ["projB"])
 
+    def test_subday_since_bypasses_day_truncated_summary(self):
+        # The materialised summaries bucket by whole UTC day. A rolling since
+        # with a sub-day time component (e.g. the Overview 1d/2d/3d filters send
+        # `new Date(...).toISOString()`) must NOT hit the day-truncated fast
+        # path, or it wrongly counts the whole calendar day. Here two assistant
+        # turns sit on the same UTC day, early and late; a midday `since` must
+        # keep only the late one.
+        with connect(self.db) as c:
+            c.executescript("""
+            INSERT INTO messages (uuid, parent_uuid, session_id, project_slug, type, timestamp, model,
+              input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
+              prompt_text, prompt_chars)
+            VALUES
+              ('e1',NULL,'s3','projC','assistant','2026-05-01T02:00:00Z','claude-opus-4-7',1000,0,0,0,0,NULL,NULL),
+              ('l1',NULL,'s3','projC','assistant','2026-05-01T22:00:00Z','claude-haiku-4-5',7,0,0,0,0,NULL,NULL);
+            INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, timestamp, is_error)
+            VALUES ('e1','s3','projC','Grep','x','2026-05-01T02:00:00Z',0),
+                   ('l1','s3','projC','Grep','y','2026-05-01T22:00:00Z',0);
+            """)
+            c.commit()
+        rebuild_summaries(self.db)
+        since = "2026-05-01T12:00:00.000Z"
+
+        # overview_totals: only the late (7-token) turn, not the full-day 1007.
+        self.assertEqual(overview_totals(self.db, since=since)["input_tokens"], 7)
+
+        # model_breakdown: the early model must be absent, only the late one.
+        models = {r["model"]: r for r in model_breakdown(self.db, since=since)}
+        self.assertNotIn("claude-opus-4-7", models)
+        self.assertEqual(models["claude-haiku-4-5"]["input_tokens"], 7)
+
+        # project_summary: projC counts only the late turn's tokens.
+        projects = {r["project_slug"]: r for r in project_summary(self.db, since=since)}
+        self.assertEqual(projects["projC"]["input_tokens"], 7)
+
+        # tool_token_breakdown: only the late Grep call.
+        tools = {r["tool_name"]: r for r in tool_token_breakdown(self.db, since=since)}
+        self.assertEqual(tools["Grep"]["calls"], 1)
+
     def test_partial_summary_rebuild_updates_only_requested_days_and_sessions(self):
         rebuild_summaries(self.db)
         with connect(self.db) as c:

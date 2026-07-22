@@ -319,6 +319,22 @@ def _date_range_clause(since, until, col: str = "substr(timestamp, 1, 10)"):
     return ((" AND " + " AND ".join(where)) if where else "", args)
 
 
+def _day_aligned(ts) -> bool:
+    """True when a range boundary sits exactly on a UTC calendar-day edge.
+
+    The summary_daily / summary_projects / summary_models / summary_tools fast
+    paths bucket by whole UTC days, so their totals are only correct when
+    since/until land on a day boundary: None, a date-only string, or a midnight
+    timestamp. Rolling ranges such as the Overview 1d/2d/3d filters send a
+    full-precision ``toISOString()`` with a sub-day time component; those must
+    bypass the day-bucketed fast path (its ``since[:10]`` truncation would fold
+    in the whole partial calendar day — up to ~100% overcount on a 1-day range).
+    """
+    if not ts or len(ts) <= 10:
+        return True
+    return ts[11:19] == "00:00:00"
+
+
 def _summary_ready(conn) -> bool:
     row = conn.execute("SELECT v FROM summary_meta WHERE k='last_rebuild'").fetchone()
     return row is not None
@@ -541,7 +557,7 @@ def overview_totals(db_path, since=None, until=None) -> dict:
         FROM messages WHERE 1=1 {rng}
     """
     with connect(db_path) as c:
-        if _summary_ready(c):
+        if _summary_ready(c) and _day_aligned(since) and _day_aligned(until):
             day_rng, day_args = _date_range_clause(since, until, col="day")
             sess_where, sess_args = _session_range_clause(since, until)
             totals = dict(c.execute(f"""
@@ -637,7 +653,7 @@ def project_summary(db_path, since=None, until=None) -> list:
        ORDER BY billable_tokens DESC
     """
     with connect(db_path) as c:
-        if _summary_ready(c):
+        if _summary_ready(c) and _day_aligned(since) and _day_aligned(until):
             day_rng, day_args = _date_range_clause(since, until, col="day")
             sess_where, sess_args = _session_range_clause(since, until)
             session_sql = f"""
@@ -684,7 +700,7 @@ def tool_token_breakdown(db_path, since=None, until=None) -> list:
        ORDER BY calls DESC
     """
     with connect(db_path) as c:
-        if _summary_ready(c):
+        if _summary_ready(c) and _day_aligned(since) and _day_aligned(until):
             day_rng, day_args = _date_range_clause(since, until, col="day")
             return [dict(r) for r in c.execute(f"""
               SELECT tool_name,
@@ -902,7 +918,7 @@ def model_breakdown(db_path, since=None, until=None) -> list:
        ORDER BY (input_tokens + output_tokens + cache_create_5m_tokens + cache_create_1h_tokens) DESC
     """
     with connect(db_path) as c:
-        if _summary_ready(c):
+        if _summary_ready(c) and _day_aligned(since) and _day_aligned(until):
             day_rng, day_args = _date_range_clause(since, until, col="day")
             return [dict(r) for r in c.execute(f"""
               SELECT model,
