@@ -10,6 +10,8 @@ import unittest
 import urllib.request
 import urllib.error
 
+from pathlib import Path
+
 import token_dashboard.server as server
 from token_dashboard.db import init_db, set_setting
 from token_dashboard.server import build_handler
@@ -211,6 +213,27 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(body["available"])
         self.assertIn("install_url", body)
         self.assertIsNone(body["summary"])
+
+
+class ResolveStaticTests(unittest.TestCase):
+    def test_contains_and_rejects_escapes(self):
+        tmp = tempfile.mkdtemp()
+        root = Path(tmp) / "web"
+        root.mkdir()
+        (root / "app.js").write_text("ok", encoding="utf-8")
+        sibling = Path(tmp) / "web-secret"  # shares the "web" prefix
+        sibling.mkdir()
+        (sibling / "secret.txt").write_text("nope", encoding="utf-8")
+
+        # A real file inside the root resolves.
+        self.assertEqual(server._resolve_static(root, "app.js"), (root / "app.js").resolve())
+        # A missing file is None (not an escape, just absent).
+        self.assertIsNone(server._resolve_static(root, "missing.js"))
+        # The sibling whose name shares the "web" prefix must be rejected -
+        # a plain startswith(str(root)) check would have accepted it.
+        self.assertIsNone(server._resolve_static(root, "../web-secret/secret.txt"))
+        # Classic parent traversal is rejected.
+        self.assertIsNone(server._resolve_static(root, "../../etc/passwd"))
 
 
 class McpUsageMatchTests(unittest.TestCase):

@@ -195,10 +195,24 @@ def _rtk_payload(home=None) -> dict:
 
 
 
+def _resolve_static(root: Path, rel: str) -> Optional[Path]:
+    """Resolve a request path under ``root``, or None if it escapes or is not a file.
+
+    Containment uses ``relative_to``: a plain ``startswith(str(root))`` check
+    would accept a sibling directory whose name shares the root's prefix
+    (e.g. ``root`` + "-secret"), since the separator isn't part of the compare.
+    """
+    p = (root / rel.lstrip("/")).resolve()
+    try:
+        p.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return p if p.is_file() else None
+
+
 def _serve_static(handler, rel: str) -> None:
-    rel = rel.lstrip("/")
-    p = (WEB_ROOT / rel).resolve()
-    if not str(p).startswith(str(WEB_ROOT.resolve())) or not p.is_file():
+    p = _resolve_static(WEB_ROOT, rel)
+    if p is None:
         handler.send_response(404)
         handler.end_headers()
         return
