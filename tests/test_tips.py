@@ -1201,5 +1201,29 @@ class LongSkillDescriptionsTests(unittest.TestCase):
         self.assertEqual(tips, [])
 
 
+class TipSchemaHelperTests(unittest.TestCase):
+    def test_instance_builder_shape(self):
+        from token_dashboard import tips as tipmod
+        inst = tipmod._instance(title="foo.py — 3×", key="repeat-file:foo.py",
+                                links=[{"label": "s", "href": "#/sessions/x"}, None])
+        self.assertEqual(inst, {"title": "foo.py — 3×", "key": "repeat-file:foo.py",
+                        "links": [{"label": "s", "href": "#/sessions/x"}]})
+
+    def test_make_tip_without_instances_has_no_instances_key(self):
+        from token_dashboard import tips as tipmod
+        t = tipmod._make_tip(key="k", category="c", severity="info",
+                             title="t", body="b", scope="s")
+        self.assertNotIn("instances", t)
+
+    def test_make_tip_with_instances_includes_them(self):
+        from token_dashboard import tips as tipmod
+        inst = tipmod._instance(title="i", key="c:1", links=[])
+        t = tipmod._make_tip(key="c:overall", category="c", severity="info",
+                             title="Heading", body="shared", scope="overall",
+                             instances=[inst])
+        self.assertEqual(t["instances"], [inst])
+        self.assertEqual(t["title"], "Heading")
+
+
 if __name__ == "__main__":
     unittest.main()

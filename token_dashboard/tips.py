@@ -10,6 +10,7 @@ Tip dict shape:
     "scope": str,                     # what this tip is about (project, file, session, ...)
     "links": [{"label": str, "href": str}],   # drill-down anchors (dashboard or external)
     "estimated_savings_usd": float | None,    # optional, where computable
+    "instances": [ {"title": str, "key": str, "links": [...]} ] | absent,  # grouped tips only
   }
 """
 from __future__ import annotations
@@ -60,8 +61,17 @@ def _doc_link(label: str, href: str) -> dict:
     return {"label": label, "href": href}
 
 
-def _make_tip(*, key, category, severity, title, body, scope, links=None, savings=None) -> dict:
+def _instance(*, title, key, links=None) -> dict:
     return {
+        "title": title,
+        "key": key,
+        "links": [l for l in (links or []) if l],
+    }
+
+
+def _make_tip(*, key, category, severity, title, body, scope,
+              links=None, savings=None, instances=None) -> dict:
+    tip = {
         "key": key,
         "category": category,
         "severity": severity,
@@ -71,6 +81,9 @@ def _make_tip(*, key, category, severity, title, body, scope, links=None, saving
         "links": [l for l in (links or []) if l],
         "estimated_savings_usd": savings,
     }
+    if instances:
+        tip["instances"] = instances
+    return tip
 
 
 def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
