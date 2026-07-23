@@ -10,6 +10,7 @@ Tip dict shape:
     "scope": str,                     # what this tip is about (project, file, session, ...)
     "links": [{"label": str, "href": str}],   # drill-down anchors (dashboard or external)
     "estimated_savings_usd": float | None,    # optional, where computable
+    "instances": [ {"title": str, "detail": str|None, "key": str, "links": [...]} ] | absent,  # grouped tips only; title = bold identifier line, detail = stat line
   }
 """
 from __future__ import annotations
@@ -60,8 +61,18 @@ def _doc_link(label: str, href: str) -> dict:
     return {"label": label, "href": href}
 
 
-def _make_tip(*, key, category, severity, title, body, scope, links=None, savings=None) -> dict:
+def _instance(*, title, detail=None, key, links=None) -> dict:
     return {
+        "title": title,
+        "detail": detail,
+        "key": key,
+        "links": [l for l in (links or []) if l],
+    }
+
+
+def _make_tip(*, key, category, severity, title, body, scope,
+              links=None, savings=None, instances=None) -> dict:
+    tip = {
         "key": key,
         "category": category,
         "severity": severity,
@@ -71,6 +82,9 @@ def _make_tip(*, key, category, severity, title, body, scope, links=None, saving
         "links": [l for l in (links or []) if l],
         "estimated_savings_usd": savings,
     }
+    if instances:
+        tip["instances"] = instances
+    return tip
 
 
 def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
@@ -85,7 +99,7 @@ def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict
        GROUP BY project_slug
        HAVING (cr + rebuild) > 100000
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since,)):
             total = (row["cr"] or 0) + (row["rebuild"] or 0)
@@ -102,23 +116,25 @@ def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict
                         LIMIT 1""",
                     (row["project_slug"], since),
                 ).fetchone()
-                links = [
-                    _session_link(worst_session["session_id"] if worst_session else None,
-                                  "Worst session in this project"),
-                    _doc_link("Anthropic: prompt caching",
-                              "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"),
-                ]
-                out.append(_make_tip(
-                    key=key, category="cache", severity="warning",
-                    title=f"Low cache hit rate in {row['project_slug']}",
-                    body=(f"Cache hit rate is {hit*100:.0f}% over the last 7 days. "
-                          "Pauses over 5 minutes invalidate the prompt cache, so sessions that "
-                          "restart context frequently rebuild it. Consider longer-lived sessions "
-                          "or fewer /clear resets."),
-                    scope=row["project_slug"],
-                    links=links,
+                insts.append(_instance(
+                    title=row["project_slug"],
+                    detail=f"{hit*100:.0f}% cache hit rate over 7 days",
+                    key=key,
+                    links=[_session_link(worst_session["session_id"] if worst_session else None,
+                                         "Worst session in this project")],
                 ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("cache", "overall"), category="cache", severity="warning",
+        title="Low cache efficiency",
+        body=("Pauses over 5 minutes invalidate the prompt cache, so sessions that restart "
+              "context frequently rebuild it. Consider longer-lived sessions or fewer /clear "
+              "resets."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: prompt caching",
+                          "https://platform.claude.com/docs/en/build-with-claude/prompt-caching")],
+    )]
 
 
 def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
@@ -126,6 +142,7 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     since = _iso_days_ago(today_iso, 7)
     out = []
     with connect(db_path) as c:
+        file_insts = []
         for row in c.execute("""
           SELECT target, COUNT(*) AS n, COUNT(DISTINCT session_id) AS sessions
             FROM tool_calls
@@ -143,15 +160,22 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
                     GROUP BY session_id ORDER BY COUNT(*) DESC LIMIT 1""",
                 (row["target"], since),
             ).fetchone()
-            out.append(_make_tip(
-                key=key, category="repeat-file", severity="info",
-                title=f"{row['target']} read {row['n']} times",
-                body=(f"This file was opened {row['n']} times across {row['sessions']} sessions "
-                      "in the past 7 days. A summary in CLAUDE.md or one read per session would "
-                      "avoid repeats."),
-                scope=row["target"],
+            file_insts.append(_instance(
+                title=row["target"],
+                detail=f"{row['n']}× across {row['sessions']} sessions",
+                key=key,
                 links=[_session_link(worst["session_id"] if worst else None, "Heaviest session")],
             ))
+        if file_insts:
+            out.append(_make_tip(
+                key=_key("repeat-file", "overall"), category="repeat-file", severity="info",
+                title="Files read repeatedly",
+                body=("Opening the same file many times across sessions wastes tokens. "
+                      "A summary in CLAUDE.md, or one read per session, avoids the repeats."),
+                scope="overall", instances=file_insts,
+            ))
+
+        bash_insts = []
         for row in c.execute("""
           SELECT target, COUNT(*) AS n
             FROM tool_calls
@@ -168,12 +192,19 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
                     GROUP BY session_id ORDER BY COUNT(*) DESC LIMIT 1""",
                 (row["target"], since),
             ).fetchone()
-            out.append(_make_tip(
-                key=key, category="repeat-bash", severity="info",
-                title=f"`{row['target']}` ran {row['n']} times",
-                body=f"This bash command ran {row['n']} times in the past 7 days. Consider a watch flag or shell alias.",
-                scope=row["target"],
+            bash_insts.append(_instance(
+                title=row["target"],
+                detail=f"ran {row['n']}×",
+                key=key,
                 links=[_session_link(worst["session_id"] if worst else None, "Heaviest session")],
+            ))
+        if bash_insts:
+            out.append(_make_tip(
+                key=_key("repeat-bash", "overall"), category="repeat-bash", severity="info",
+                title="Commands run repeatedly",
+                body=("Re-running the same command many times suggests a watch flag "
+                      "or shell alias would save the round-trips."),
+                scope="overall", instances=bash_insts,
             ))
     return out
 
@@ -282,6 +313,7 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
                                   "https://code.claude.com/docs/en/mcp"),
                     ],
                 ))
+        sub_insts = []
         for row in c.execute("""
           SELECT agent_id, COUNT(*) AS n,
                  AVG(input_tokens+output_tokens) AS mean_t,
@@ -300,15 +332,21 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
                         ORDER BY input_tokens+output_tokens DESC LIMIT 1""",
                     (row["agent_id"], since),
                 ).fetchone()
-                out.append(_make_tip(
-                    key=key, category="subagent-outlier", severity="info",
-                    title=f"Subagent {row['agent_id']} has cost outliers",
-                    body=(f"Largest invocation used {int(row['max_t']):,} tokens vs mean "
-                          f"{int(row['mean_t']):,}. Worth checking what those did differently."),
-                    scope=row["agent_id"],
+                sub_insts.append(_instance(
+                    title=row["agent_id"],
+                    detail=f"max {int(row['max_t']):,} vs mean {int(row['mean_t']):,} tokens",
+                    key=key,
                     links=[_session_link(worst["session_id"] if worst else None,
                                          "Largest invocation")],
                 ))
+        if sub_insts:
+            out.append(_make_tip(
+                key=_key("subagent-outlier", "overall"), category="subagent-outlier", severity="info",
+                title="Subagent cost outliers",
+                body=("A subagent whose largest run dwarfs its average is worth checking — the "
+                      "outlier invocations may be doing something different or unbounded."),
+                scope="overall", instances=sub_insts,
+            ))
     return out
 
 
@@ -570,7 +608,7 @@ def claude_md_size_tips(db_path, today_iso: Optional[str] = None,
     today_iso = today_iso or datetime.utcnow().isoformat()
     since = _iso_days_ago(today_iso, 30)
 
-    out = []
+    insts = []
     seen_paths: set[str] = set()
     for cwd in _distinct_active_cwds(db_path, since):
         if not cwd:
@@ -600,20 +638,24 @@ def claude_md_size_tips(db_path, today_iso: Optional[str] = None,
                     break
                 # Rough cost: chars-per-line * 0.25 token/char, charged each turn
                 approx_tokens = (len(text) // 4)
-                out.append(_make_tip(
-                    key=key, category="claude-md-size", severity="info",
-                    title=f"CLAUDE.md is {lines} lines — Anthropic suggests under {max_lines}",
-                    body=(f"`{ancestor.name}/CLAUDE.md` weighs ~{approx_tokens:,} tokens and is "
-                          "loaded every turn in this project. Move detailed workflows into "
-                          "on-demand skills, keep only essentials here."),
-                    scope=scope,
-                    links=[
-                        _doc_link("Anthropic: manage costs (CLAUDE.md size)",
-                                  "https://code.claude.com/docs/en/costs"),
-                    ],
+                insts.append(_instance(
+                    title=f"{ancestor.name}/CLAUDE.md",
+                    detail=f"{lines} lines (~{approx_tokens:,} tokens)",
+                    key=key,
+                    links=[],
                 ))
                 break  # one tip per cwd ancestry
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("claude-md-size", "overall"), category="claude-md-size", severity="info",
+        title="Oversized CLAUDE.md files",
+        body=("CLAUDE.md is loaded every turn. Files past ~200 lines add up fast — move "
+              "detailed workflows into on-demand skills and keep only the essentials here."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage costs (CLAUDE.md size)",
+                          "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
@@ -625,7 +667,7 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     today_iso = today_iso or datetime.utcnow().isoformat()
     since = _iso_days_ago(today_iso, 7)
     leaks = cross_workspace_leaks(db_path, limit=10, since=since)
-    out: List[dict] = []
+    insts = []
     for leak in leaks:
         if (leak["calls"] or 0) < 50:
             continue
@@ -633,25 +675,27 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
         key = _key("cross-workspace", scope)
         if _is_dismissed(db_path, key):
             continue
-        body = (
-            f"Sessions in {leak['source']} touched files in {leak['target']} "
-            f"{leak['calls']} times across {leak['sessions']} sessions in the past 7 days."
-        )
+        inst_detail = f"{leak['calls']} calls across {leak['sessions']} sessions"
         if leak["top_files"]:
             top = leak["top_files"][0]
-            body += f" Top file: {top['path']} ({top['n']} reads)."
-        body += (
-            " If this info is load-bearing, summarize it into the source"
-            " workspace's CLAUDE.md or a memory entry so agents stop crossing."
-        )
-        out.append(_make_tip(
-            key=key, category="cross-workspace", severity="info",
-            title=f"{leak['source']} -> {leak['target']}: {leak['calls']} cross-workspace calls",
-            body=body,
-            scope=scope,
-            links=[{"label": "Open Workspaces view", "href": "#/workspaces"}],
+            inst_detail += f" · top: {top['path']} ({top['n']})"
+        insts.append(_instance(
+            title=f"{leak['source']} → {leak['target']}",
+            detail=inst_detail,
+            key=key,
+            links=[],
         ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("cross-workspace", "overall"), category="cross-workspace", severity="info",
+        title="Cross-workspace file access",
+        body=("When sessions in one workspace keep reaching into another, that shared info "
+              "is a candidate for the source workspace's CLAUDE.md or a memory entry, so "
+              "agents stop crossing."),
+        scope="overall", instances=insts,
+        links=[{"label": "Open Workspaces view", "href": "#/workspaces"}],
+    )]
 
 
 # ── New tip: session approached the context window limit ────────────────────
@@ -688,7 +732,7 @@ def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict
        ORDER BY peak_new DESC
        LIMIT 3
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since, _CONTEXT_PRESSURE_PEAK_NEW)):
             sid = row["session_id"]
@@ -696,22 +740,23 @@ def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict
             if _is_dismissed(db_path, key):
                 continue
             peak = int(row["peak_new"] or 0)
-            out.append(_make_tip(
-                key=key, category="context-pressure", severity="info",
-                title=f"Session {sid[:8]}… added {peak:,} new tokens in a single turn",
-                body=(f"Peak net-new tokens in one assistant turn: {peak:,} "
-                      "(uncached input + freshly cached content). High values "
-                      "indicate a session that's accreting context fast — "
-                      "consider `/clear` between unrelated tasks or splitting "
-                      "long work across sessions."),
-                scope=sid,
-                links=[
-                    _session_link(sid, "Open session"),
-                    _doc_link("Anthropic: manage context",
-                              "https://code.claude.com/docs/en/costs"),
-                ],
+            insts.append(_instance(
+                title=f"Session {sid[:8]}…",
+                detail=f"{peak:,} new tokens in one turn",
+                key=key,
+                links=[_session_link(sid, "Open session")],
             ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("context-pressure", "overall"), category="context-pressure", severity="info",
+        title="Context-heavy sessions",
+        body=("High net-new tokens in a single turn means a session is accreting context "
+              "fast. Consider /clear between unrelated tasks, or splitting long work across "
+              "sessions."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage context", "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 # ── New tip: repeated identical Bash errors ──────────────────────────────────
@@ -745,7 +790,7 @@ def repeated_bash_errors_tips(db_path, today_iso: Optional[str] = None) -> List[
        ORDER BY n DESC
        LIMIT 5
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since,)):
             cmd = row["cmd"]
@@ -753,18 +798,22 @@ def repeated_bash_errors_tips(db_path, today_iso: Optional[str] = None) -> List[
             if _is_dismissed(db_path, key):
                 continue
             display = (cmd[:80] + "…") if len(cmd) > 80 else cmd
-            out.append(_make_tip(
-                key=key, category="bash-errors", severity="info",
-                title=f"`{display}` failed {row['n']} times",
-                body=("This Bash command produced an error result more than "
-                      f"{row['n']} times in the past 3 days. Repeated identical "
-                      "failures usually mean the underlying cause isn't being "
-                      "investigated. Check the error message in the latest "
-                      "session and address the root cause rather than retrying."),
-                scope=cmd[:200],
+            insts.append(_instance(
+                title=display,
+                detail=f"failed {row['n']}× in 3 days",
+                key=key,
                 links=[_session_link(row["sample_session"], "Latest occurrence")],
             ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("bash-errors", "overall"), category="bash-errors", severity="info",
+        title="Repeated command failures",
+        body=("A command that keeps failing identically usually means the root cause "
+              "isn't being investigated. Check the latest error and fix the cause rather "
+              "than retrying."),
+        scope="overall", instances=insts,
+    )]
 
 
 # ── New tip: high web-fetch volume ───────────────────────────────────────────
@@ -796,7 +845,6 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
     """
     today_iso = today_iso or datetime.utcnow().isoformat()
     since = _iso_days_ago(today_iso, 7)
-    out = []
     with connect(db_path) as c:
         # Pull all per-session tool_name counts, then filter in Python so the
         # regex stays in one place.
@@ -814,28 +862,30 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
         if _is_web_fetch_tool(row["tool_name"]):
             by_session[row["session_id"]] = by_session.get(row["session_id"], 0) + row["n"]
 
+    insts = []
     for sid, n in sorted(by_session.items(), key=lambda kv: -kv[1])[:5]:
         if n < 15:
             continue
         key = _key("web-fetch-volume", sid)
         if _is_dismissed(db_path, key):
             continue
-        out.append(_make_tip(
-            key=key, category="web-fetch-volume", severity="info",
-            title=f"Session {sid[:8]}… made {n} web-fetch calls",
-            body=(f"Heavy web-fetch use in one session ({n} calls in 7 days). "
-                  "Each call inflates context with the fetched page. If the "
-                  "same URLs come back repeatedly, summarize them once into "
-                  "CLAUDE.md or a memory entry instead. If a single page is "
-                  "huge, ask for a narrower selector."),
-            scope=sid,
-            links=[
-                _session_link(sid, "Open session"),
-                _doc_link("Anthropic: manage costs",
-                          "https://code.claude.com/docs/en/costs"),
-            ],
+        insts.append(_instance(
+            title=f"Session {sid[:8]}…",
+            detail=f"{n} fetches in 7 days",
+            key=key,
+            links=[_session_link(sid, "Open session")],
         ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("web-fetch-volume", "overall"), category="web-fetch-volume", severity="info",
+        title="High web-fetch sessions",
+        body=("Each fetch inflates context with the fetched page. Repeated URLs are "
+              "candidates for a CLAUDE.md or memory summary; a single huge page can take a "
+              "narrower selector."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage costs", "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 # ── New tip: Opus-only workspaces ────────────────────────────────────────────
@@ -860,7 +910,7 @@ def opus_only_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[d
        ORDER BY total DESC
        LIMIT 3
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since,)):
             project = row["project_slug"]
@@ -868,20 +918,23 @@ def opus_only_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[d
             if _is_dismissed(db_path, key):
                 continue
             pct = (row["opus_n"] or 0) * 100 // (row["total"] or 1)
-            out.append(_make_tip(
-                key=key, category="opus-only", severity="cost",
-                title=f"{project}: {pct}% of turns on Opus",
-                body=(f"{row['opus_n']:,} of {row['total']:,} assistant turns in "
-                      f"the past 14 days ran on Opus. For routine work (file "
-                      "reads, refactors, scaffolding), Sonnet is ~5x cheaper at "
-                      "comparable quality. Reserve Opus for hard reasoning."),
-                scope=project,
-                links=[
-                    _doc_link("Anthropic: choose the right model",
-                              "https://code.claude.com/docs/en/costs"),
-                ],
+            insts.append(_instance(
+                title=project,
+                detail=f"{pct}% of {row['total']:,} turns on Opus",
+                key=key,
+                links=[],
             ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("opus-only", "overall"), category="opus-only", severity="cost",
+        title="Opus-heavy projects",
+        body=("Routine work — file reads, refactors, scaffolding — runs well on Sonnet at "
+              "roughly 5× lower cost. Reserve Opus for the hard reasoning."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: choose the right model",
+                          "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 # ── New tip: MCP server sprawl ───────────────────────────────────────────────
@@ -955,7 +1008,7 @@ def claude_md_stack_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     today_iso = today_iso or datetime.utcnow().isoformat()
     since = _iso_days_ago(today_iso, 30)
 
-    out = []
+    insts = []
     seen_combos: set[tuple] = set()
     for cwd in _distinct_active_cwds(db_path, since):
         if not cwd:
@@ -988,24 +1041,24 @@ def claude_md_stack_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
         key = _key("claude-md-stack", scope)
         if _is_dismissed(db_path, key):
             continue
-        files_desc = ", ".join(
-            f"{Path(p).parent.name or Path(p).anchor}/CLAUDE.md ({n}l)"
-            for p, n in stack
-        )
-        out.append(_make_tip(
-            key=key, category="claude-md-stack", severity="info",
-            title=f"{len(stack)} CLAUDE.md files stack to {total_lines} lines",
-            body=(f"Working in `{cwd_path.name}`, the agent reads "
-                  f"{len(stack)} CLAUDE.md files every turn — combined "
-                  f"{total_lines} lines. Stack: {files_desc}. Consider "
-                  "consolidating overlapping guidance into a single layer."),
-            scope=scope,
-            links=[
-                _doc_link("Anthropic: manage costs (CLAUDE.md size)",
-                          "https://code.claude.com/docs/en/costs"),
-            ],
+        insts.append(_instance(
+            title=cwd_path.name,
+            detail=f"{len(stack)} files, {total_lines} lines",
+            key=key,
+            links=[],
         ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("claude-md-stack", "overall"), category="claude-md-stack", severity="info",
+        title="Stacked CLAUDE.md files",
+        body=("Each CLAUDE.md layer (global + project + nested) adds context every turn "
+              "even when each is individually within limits. Consider consolidating "
+              "overlapping guidance into one layer."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage costs (CLAUDE.md size)",
+                          "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 # ── New tip: skills with overlong descriptions ───────────────────────────────
@@ -1134,7 +1187,7 @@ def bash_bloat_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
        ORDER BY avg_t * n DESC
        LIMIT 10
     """
-    out: List[dict] = []
+    insts: List[dict] = []
     with connect(db_path) as c:
         rows = list(c.execute(sql, (since,)))
 
@@ -1144,7 +1197,7 @@ def bash_bloat_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         cmd = row["cmd"]
         if _has_output_limiter(cmd):
             continue
-        if len(out) >= 5:
+        if len(insts) >= 5:
             break
         key = _key("bash-bloat", (cmd or "")[:120])
         if _is_dismissed(db_path, key):
@@ -1152,21 +1205,24 @@ def bash_bloat_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         avg_t = int(row["avg_t"] or 0)
         max_t = int(row["max_t"] or 0)
         display = (cmd[:80] + "…") if len(cmd) > 80 else cmd
-        out.append(_make_tip(
-            key=key, category="bash-bloat", severity="info",
-            title=f"`{display}` averages {avg_t:,} tokens of output",
-            body=(f"Ran {row['n']} times in the past 7 days, avg result "
-                  f"{avg_t:,} tokens (max {max_t:,}). Piping the output through "
-                  "`head`, `tail`, or `Select-Object -First` (PowerShell) would "
-                  "shrink the result Claude has to read back."),
-            scope=cmd[:200],
-            links=[
-                _session_link(row["sample_session"], "Session with this command"),
-                _doc_link("Anthropic: reduce MCP tool overhead",
-                          "https://code.claude.com/docs/en/mcp"),
-            ],
+        insts.append(_instance(
+            title=display,
+            detail=f"avg {avg_t:,} tokens (max {max_t:,})",
+            key=key,
+            links=[_session_link(row["sample_session"], "Session with this command")],
         ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("bash-bloat", "overall"), category="bash-bloat", severity="info",
+        title="Bash output bloat",
+        body=("Piping output through head, tail, or Select-Object -First (PowerShell) "
+              "shrinks what Claude has to read back. These commands ran without an output "
+              "limiter."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: reduce MCP tool overhead",
+                          "https://code.claude.com/docs/en/mcp")],
+    )]
 
 
 # ── New tip: dead skills (zero invocations in 90d) ───────────────────────────
@@ -1316,7 +1372,7 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
        ORDER BY total_ret DESC
        LIMIT 5
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since, _SUBAGENT_RETURN_TOTAL_MIN,
                                    _SUBAGENT_RETURN_AVG_MIN)):
@@ -1324,24 +1380,24 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
             key = _key("subagent-sprawl", sid)
             if _is_dismissed(db_path, key):
                 continue
-            out.append(_make_tip(
-                key=key, category="subagent-sprawl", severity="info",
-                title=f"Subagent returns inflating main in session {sid[:8]}…",
-                body=(f"{row['n_dispatch']} subagent dispatch(es) returned "
-                      f"{int(row['total_ret']):,} tokens into main context "
-                      f"(avg {int(row['avg_ret']):,}, max {int(row['max_ret']):,}). "
-                      "Large returns negate the point of delegation — ask "
-                      "subagents for narrower summaries, or split one big "
-                      "dispatch into a few focused ones."),
-                scope=sid,
-                links=[
-                    _session_link(sid, "Open session"),
-                    {"label": "Subagents view", "href": "#/subagents"},
-                    _doc_link("Anthropic: manage costs",
-                              "https://code.claude.com/docs/en/costs"),
-                ],
+            insts.append(_instance(
+                title=f"Session {sid[:8]}…",
+                detail=(f"{row['n_dispatch']} dispatch(es), "
+                        f"{int(row['total_ret']):,} tokens returned"),
+                key=key,
+                links=[_session_link(sid, "Open session"),
+                       {"label": "Subagents view", "href": "#/subagents"}],
             ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("subagent-sprawl", "overall"), category="subagent-sprawl", severity="info",
+        title="Subagent return bloat",
+        body=("Large subagent returns negate the point of delegation. Ask subagents for "
+              "narrower summaries, or split one big dispatch into a few focused ones."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage costs", "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 def all_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
