@@ -10,7 +10,7 @@ Tip dict shape:
     "scope": str,                     # what this tip is about (project, file, session, ...)
     "links": [{"label": str, "href": str}],   # drill-down anchors (dashboard or external)
     "estimated_savings_usd": float | None,    # optional, where computable
-    "instances": [ {"title": str, "key": str, "links": [...]} ] | absent,  # grouped tips only
+    "instances": [ {"title": str, "detail": str|None, "key": str, "links": [...]} ] | absent,  # grouped tips only; title = bold identifier line, detail = stat line
   }
 """
 from __future__ import annotations
@@ -61,9 +61,10 @@ def _doc_link(label: str, href: str) -> dict:
     return {"label": label, "href": href}
 
 
-def _instance(*, title, key, links=None) -> dict:
+def _instance(*, title, detail=None, key, links=None) -> dict:
     return {
         "title": title,
+        "detail": detail,
         "key": key,
         "links": [l for l in (links or []) if l],
     }
@@ -116,7 +117,8 @@ def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict
                     (row["project_slug"], since),
                 ).fetchone()
                 insts.append(_instance(
-                    title=f"{row['project_slug']}: {hit*100:.0f}% hit rate over 7 days",
+                    title=row["project_slug"],
+                    detail=f"{hit*100:.0f}% cache hit rate over 7 days",
                     key=key,
                     links=[_session_link(worst_session["session_id"] if worst_session else None,
                                          "Worst session in this project")],
@@ -159,7 +161,8 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
                 (row["target"], since),
             ).fetchone()
             file_insts.append(_instance(
-                title=f"{row['target']} — {row['n']}× across {row['sessions']} sessions",
+                title=row["target"],
+                detail=f"{row['n']}× across {row['sessions']} sessions",
                 key=key,
                 links=[_session_link(worst["session_id"] if worst else None, "Heaviest session")],
             ))
@@ -190,7 +193,8 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
                 (row["target"], since),
             ).fetchone()
             bash_insts.append(_instance(
-                title=f"`{row['target']}` — ran {row['n']}×",
+                title=row["target"],
+                detail=f"ran {row['n']}×",
                 key=key,
                 links=[_session_link(worst["session_id"] if worst else None, "Heaviest session")],
             ))
@@ -329,7 +333,8 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
                     (row["agent_id"], since),
                 ).fetchone()
                 sub_insts.append(_instance(
-                    title=f"{row['agent_id']}: max {int(row['max_t']):,} vs mean {int(row['mean_t']):,} tokens",
+                    title=row["agent_id"],
+                    detail=f"max {int(row['max_t']):,} vs mean {int(row['mean_t']):,} tokens",
                     key=key,
                     links=[_session_link(worst["session_id"] if worst else None,
                                          "Largest invocation")],
@@ -634,7 +639,8 @@ def claude_md_size_tips(db_path, today_iso: Optional[str] = None,
                 # Rough cost: chars-per-line * 0.25 token/char, charged each turn
                 approx_tokens = (len(text) // 4)
                 insts.append(_instance(
-                    title=f"{ancestor.name}/CLAUDE.md — {lines} lines (~{approx_tokens:,} tokens)",
+                    title=f"{ancestor.name}/CLAUDE.md",
+                    detail=f"{lines} lines (~{approx_tokens:,} tokens)",
                     key=key,
                     links=[],
                 ))
@@ -669,12 +675,13 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
         key = _key("cross-workspace", scope)
         if _is_dismissed(db_path, key):
             continue
-        inst_title = f"{leak['source']} → {leak['target']}: {leak['calls']} calls across {leak['sessions']} sessions"
+        inst_detail = f"{leak['calls']} calls across {leak['sessions']} sessions"
         if leak["top_files"]:
             top = leak["top_files"][0]
-            inst_title += f" · top: {top['path']} ({top['n']})"
+            inst_detail += f" · top: {top['path']} ({top['n']})"
         insts.append(_instance(
-            title=inst_title,
+            title=f"{leak['source']} → {leak['target']}",
+            detail=inst_detail,
             key=key,
             links=[],
         ))
@@ -734,7 +741,8 @@ def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict
                 continue
             peak = int(row["peak_new"] or 0)
             insts.append(_instance(
-                title=f"Session {sid[:8]}… — {peak:,} new tokens in one turn",
+                title=f"Session {sid[:8]}…",
+                detail=f"{peak:,} new tokens in one turn",
                 key=key,
                 links=[_session_link(sid, "Open session")],
             ))
@@ -791,7 +799,8 @@ def repeated_bash_errors_tips(db_path, today_iso: Optional[str] = None) -> List[
                 continue
             display = (cmd[:80] + "…") if len(cmd) > 80 else cmd
             insts.append(_instance(
-                title=f"`{display}` — failed {row['n']}× in 3 days",
+                title=display,
+                detail=f"failed {row['n']}× in 3 days",
                 key=key,
                 links=[_session_link(row["sample_session"], "Latest occurrence")],
             ))
@@ -862,7 +871,8 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
         if _is_dismissed(db_path, key):
             continue
         insts.append(_instance(
-            title=f"Session {sid[:8]}… — {n} fetches in 7 days",
+            title=f"Session {sid[:8]}…",
+            detail=f"{n} fetches in 7 days",
             key=key,
             links=[_session_link(sid, "Open session")],
         ))
@@ -910,7 +920,8 @@ def opus_only_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[d
                 continue
             pct = (row["opus_n"] or 0) * 100 // (row["total"] or 1)
             insts.append(_instance(
-                title=f"{project}: {pct}% of {row['total']:,} turns on Opus",
+                title=project,
+                detail=f"{pct}% of {row['total']:,} turns on Opus",
                 key=key,
                 links=[],
             ))
@@ -1032,7 +1043,8 @@ def claude_md_stack_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
         if _is_dismissed(db_path, key):
             continue
         insts.append(_instance(
-            title=f"{cwd_path.name}: {len(stack)} files, {total_lines} lines",
+            title=cwd_path.name,
+            detail=f"{len(stack)} files, {total_lines} lines",
             key=key,
             links=[],
         ))
@@ -1195,7 +1207,8 @@ def bash_bloat_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         max_t = int(row["max_t"] or 0)
         display = (cmd[:80] + "…") if len(cmd) > 80 else cmd
         insts.append(_instance(
-            title=f"`{display}` — avg {avg_t:,} tokens (max {max_t:,})",
+            title=display,
+            detail=f"avg {avg_t:,} tokens (max {max_t:,})",
             key=key,
             links=[_session_link(row["sample_session"], "Session with this command")],
         ))
@@ -1369,8 +1382,9 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
             if _is_dismissed(db_path, key):
                 continue
             insts.append(_instance(
-                title=(f"Session {sid[:8]}… — {row['n_dispatch']} dispatch(es), "
-                       f"{int(row['total_ret']):,} tokens returned"),
+                title=f"Session {sid[:8]}…",
+                detail=(f"{row['n_dispatch']} dispatch(es), "
+                        f"{int(row['total_ret']):,} tokens returned"),
                 key=key,
                 links=[_session_link(sid, "Open session"),
                        {"label": "Subagents view", "href": "#/subagents"}],

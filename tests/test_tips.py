@@ -1227,7 +1227,7 @@ class ClaudeMdStackTests(unittest.TestCase):
         self.assertEqual(tip["category"], "claude-md-stack")
         self.assertEqual(tip["title"], "Stacked CLAUDE.md files")
         self.assertEqual(len(tip["instances"]), 1)
-        self.assertIn("3 files", tip["instances"][0]["title"])
+        self.assertIn("3 files", tip["instances"][0]["detail"])
 
     def test_single_claude_md_not_flagged(self):
         proj = self.tmp / "solo"
@@ -1507,9 +1507,11 @@ class LongSkillDescriptionsTests(unittest.TestCase):
 class TipSchemaHelperTests(unittest.TestCase):
     def test_instance_builder_shape(self):
         from token_dashboard import tips as tipmod
-        inst = tipmod._instance(title="foo.py — 3×", key="repeat-file:foo.py",
+        inst = tipmod._instance(title="foo.py", detail="3× across 2 sessions",
+                                key="repeat-file:foo.py",
                                 links=[{"label": "s", "href": "#/sessions/x"}, None])
-        self.assertEqual(inst, {"title": "foo.py — 3×", "key": "repeat-file:foo.py",
+        self.assertEqual(inst, {"title": "foo.py", "detail": "3× across 2 sessions",
+                        "key": "repeat-file:foo.py",
                         "links": [{"label": "s", "href": "#/sessions/x"}]})
 
     def test_make_tip_without_instances_has_no_instances_key(self):

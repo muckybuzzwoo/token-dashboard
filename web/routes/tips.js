@@ -40,12 +40,18 @@ function severityClass(sev) {
 
 function renderInstances(instances) {
   const rows = instances.map(i => {
+    const detail = i.detail
+      ? `<div class="tip-instance-detail">${fmt.htmlSafe(i.detail)}</div>`
+      : '';
     const links = renderLinks(i.links);
     return `
       <li class="tip-instance">
-        <span class="tip-instance-title blur-sensitive">${fmt.htmlSafe(i.title)}</span>
-        ${links}
-        <button class="ghost" data-key="${fmt.htmlSafe(i.key)}">dismiss</button>
+        <div class="tip-instance-title blur-sensitive">${fmt.htmlSafe(i.title)}</div>
+        ${detail}
+        <div class="tip-instance-actions">
+          ${links}
+          <button class="ghost" data-key="${fmt.htmlSafe(i.key)}">dismiss</button>
+        </div>
       </li>`;
   }).join('');
   return `
