@@ -845,7 +845,6 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
     """
     today_iso = today_iso or datetime.utcnow().isoformat()
     since = _iso_days_ago(today_iso, 7)
-    out = []
     with connect(db_path) as c:
         # Pull all per-session tool_name counts, then filter in Python so the
         # regex stays in one place.
