@@ -15,7 +15,7 @@ from token_dashboard.tips import (
     context_pressure_tips, repeated_bash_errors_tips,
     web_fetch_volume_tips, opus_only_workspace_tips,
     mcp_sprawl_tips, claude_md_stack_tips,
-    long_skill_descriptions_tips, _is_web_fetch_tool,
+    long_skill_descriptions_tips, _is_web_fetch_tool, _key,
 )
 
 
@@ -559,13 +559,32 @@ class SubagentSprawlTests(unittest.TestCase):
         self._dispatch(session="sprawl", ts="2026-05-15T00:01:00Z",
                        tool_use_id="t2", return_tokens=12_000)
         tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
-        self.assertTrue(tips)
+        self.assertEqual(len(tips), 1)
         t = tips[0]
         _assert_tip_shape(self, t)
         self.assertEqual(t["category"], "subagent-sprawl")
-        self.assertIn("sprawl", t["scope"])
-        hrefs = [l["href"] for l in t["links"]]
+        self.assertEqual(t["title"], "Subagent return bloat")
+        self.assertEqual(len(t["instances"]), 1)
+        inst = t["instances"][0]
+        hrefs = [l["href"] for l in inst["links"]]
         self.assertIn("#/sessions/sprawl", hrefs)
+        self.assertIn("#/subagents", hrefs)
+
+    def test_bloated_returns_dismiss_removes_one_instance(self):
+        self._dispatch(session="sprawl-a", ts="2026-05-15T00:00:00Z",
+                       tool_use_id="t1", return_tokens=12_000)
+        self._dispatch(session="sprawl-a", ts="2026-05-15T00:01:00Z",
+                       tool_use_id="t2", return_tokens=12_000)
+        self._dispatch(session="sprawl-b", ts="2026-05-15T00:00:00Z",
+                       tool_use_id="t3", return_tokens=12_000)
+        self._dispatch(session="sprawl-b", ts="2026-05-15T00:01:00Z",
+                       tool_use_id="t4", return_tokens=12_000)
+        dismiss_tip(self.db, _key("subagent-sprawl", "sprawl-a"))
+        tips = subagent_sprawl_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertEqual(len(tips), 1)
+        keys = {i["key"] for i in tips[0]["instances"]}
+        self.assertNotIn(_key("subagent-sprawl", "sprawl-a"), keys)
+        self.assertIn(_key("subagent-sprawl", "sprawl-b"), keys)
 
     def test_tight_returns_not_flagged(self):
         # Real-world good delegation: subagents returned ~1k each → no flag,
@@ -750,9 +769,26 @@ class ContextPressureTests(unittest.TestCase):
         self._ins(uuid="m1", session="big",
                   input_t=50_000, cache_5m=60_000)
         tips = context_pressure_tips(self.db, today_iso="2026-05-16T00:00:00")
-        self.assertTrue(tips)
-        _assert_tip_shape(self, tips[0])
-        self.assertEqual(tips[0]["category"], "context-pressure")
+        self.assertEqual(len(tips), 1)
+        t = tips[0]
+        _assert_tip_shape(self, t)
+        self.assertEqual(t["category"], "context-pressure")
+        self.assertEqual(t["title"], "Context-heavy sessions")
+        self.assertEqual(len(t["instances"]), 1)
+        inst = t["instances"][0]
+        self.assertIn("#/sessions/big", [l["href"] for l in inst["links"]])
+
+    def test_heavy_new_content_dismiss_removes_one_instance(self):
+        self._ins(uuid="m1", session="big-a",
+                  input_t=50_000, cache_5m=60_000)
+        self._ins(uuid="m2", session="big-b",
+                  input_t=50_000, cache_5m=60_000)
+        dismiss_tip(self.db, _key("context-pressure", "big-a"))
+        tips = context_pressure_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertEqual(len(tips), 1)
+        keys = {i["key"] for i in tips[0]["instances"]}
+        self.assertNotIn(_key("context-pressure", "big-a"), keys)
+        self.assertIn(_key("context-pressure", "big-b"), keys)
 
     def test_cache_read_alone_does_not_trigger(self):
         # 500k cache_read but only 10k net-new content → no flag.
@@ -841,9 +877,33 @@ class WebFetchVolumeTests(unittest.TestCase):
                 )
             c.commit()
         tips = web_fetch_volume_tips(self.db, today_iso="2026-05-16T00:00:00")
-        self.assertTrue(tips)
-        _assert_tip_shape(self, tips[0])
-        self.assertEqual(tips[0]["category"], "web-fetch-volume")
+        self.assertEqual(len(tips), 1)
+        t = tips[0]
+        _assert_tip_shape(self, t)
+        self.assertEqual(t["category"], "web-fetch-volume")
+        self.assertEqual(t["title"], "High web-fetch sessions")
+        self.assertEqual(len(t["instances"]), 1)
+        inst = t["instances"][0]
+        self.assertIn("#/sessions/web-heavy", [l["href"] for l in inst["links"]])
+
+    def test_high_volume_dismiss_removes_one_instance(self):
+        with connect(self.db) as c:
+            for sess in ("web-heavy-a", "web-heavy-b"):
+                for i in range(20):
+                    c.execute(
+                        "INSERT INTO tool_calls (message_uuid, session_id, project_slug, "
+                        "tool_name, target, timestamp, is_error) VALUES "
+                        "(?, ?, 'p', 'WebFetch', 'https://example.com', "
+                        "'2026-05-15T00:00:00Z', 0)",
+                        (f"m{sess}{i}", sess),
+                    )
+            c.commit()
+        dismiss_tip(self.db, _key("web-fetch-volume", "web-heavy-a"))
+        tips = web_fetch_volume_tips(self.db, today_iso="2026-05-16T00:00:00")
+        self.assertEqual(len(tips), 1)
+        keys = {i["key"] for i in tips[0]["instances"]}
+        self.assertNotIn(_key("web-fetch-volume", "web-heavy-a"), keys)
+        self.assertIn(_key("web-fetch-volume", "web-heavy-b"), keys)
 
     def test_low_volume_session_not_flagged(self):
         with connect(self.db) as c:

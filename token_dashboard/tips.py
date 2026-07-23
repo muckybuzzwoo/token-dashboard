@@ -714,7 +714,7 @@ def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict
        ORDER BY peak_new DESC
        LIMIT 3
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since, _CONTEXT_PRESSURE_PEAK_NEW)):
             sid = row["session_id"]
@@ -722,22 +722,22 @@ def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict
             if _is_dismissed(db_path, key):
                 continue
             peak = int(row["peak_new"] or 0)
-            out.append(_make_tip(
-                key=key, category="context-pressure", severity="info",
-                title=f"Session {sid[:8]}… added {peak:,} new tokens in a single turn",
-                body=(f"Peak net-new tokens in one assistant turn: {peak:,} "
-                      "(uncached input + freshly cached content). High values "
-                      "indicate a session that's accreting context fast — "
-                      "consider `/clear` between unrelated tasks or splitting "
-                      "long work across sessions."),
-                scope=sid,
-                links=[
-                    _session_link(sid, "Open session"),
-                    _doc_link("Anthropic: manage context",
-                              "https://code.claude.com/docs/en/costs"),
-                ],
+            insts.append(_instance(
+                title=f"Session {sid[:8]}… — {peak:,} new tokens in one turn",
+                key=key,
+                links=[_session_link(sid, "Open session")],
             ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("context-pressure", "overall"), category="context-pressure", severity="info",
+        title="Context-heavy sessions",
+        body=("High net-new tokens in a single turn means a session is accreting context "
+              "fast. Consider /clear between unrelated tasks, or splitting long work across "
+              "sessions."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage context", "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 # ── New tip: repeated identical Bash errors ──────────────────────────────────
@@ -840,28 +840,29 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
         if _is_web_fetch_tool(row["tool_name"]):
             by_session[row["session_id"]] = by_session.get(row["session_id"], 0) + row["n"]
 
+    insts = []
     for sid, n in sorted(by_session.items(), key=lambda kv: -kv[1])[:5]:
         if n < 15:
             continue
         key = _key("web-fetch-volume", sid)
         if _is_dismissed(db_path, key):
             continue
-        out.append(_make_tip(
-            key=key, category="web-fetch-volume", severity="info",
-            title=f"Session {sid[:8]}… made {n} web-fetch calls",
-            body=(f"Heavy web-fetch use in one session ({n} calls in 7 days). "
-                  "Each call inflates context with the fetched page. If the "
-                  "same URLs come back repeatedly, summarize them once into "
-                  "CLAUDE.md or a memory entry instead. If a single page is "
-                  "huge, ask for a narrower selector."),
-            scope=sid,
-            links=[
-                _session_link(sid, "Open session"),
-                _doc_link("Anthropic: manage costs",
-                          "https://code.claude.com/docs/en/costs"),
-            ],
+        insts.append(_instance(
+            title=f"Session {sid[:8]}… — {n} fetches in 7 days",
+            key=key,
+            links=[_session_link(sid, "Open session")],
         ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("web-fetch-volume", "overall"), category="web-fetch-volume", severity="info",
+        title="High web-fetch sessions",
+        body=("Each fetch inflates context with the fetched page. Repeated URLs are "
+              "candidates for a CLAUDE.md or memory summary; a single huge page can take a "
+              "narrower selector."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage costs", "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 # ── New tip: Opus-only workspaces ────────────────────────────────────────────
@@ -1342,7 +1343,7 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
        ORDER BY total_ret DESC
        LIMIT 5
     """
-    out = []
+    insts = []
     with connect(db_path) as c:
         for row in c.execute(sql, (since, _SUBAGENT_RETURN_TOTAL_MIN,
                                    _SUBAGENT_RETURN_AVG_MIN)):
@@ -1350,24 +1351,23 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
             key = _key("subagent-sprawl", sid)
             if _is_dismissed(db_path, key):
                 continue
-            out.append(_make_tip(
-                key=key, category="subagent-sprawl", severity="info",
-                title=f"Subagent returns inflating main in session {sid[:8]}…",
-                body=(f"{row['n_dispatch']} subagent dispatch(es) returned "
-                      f"{int(row['total_ret']):,} tokens into main context "
-                      f"(avg {int(row['avg_ret']):,}, max {int(row['max_ret']):,}). "
-                      "Large returns negate the point of delegation — ask "
-                      "subagents for narrower summaries, or split one big "
-                      "dispatch into a few focused ones."),
-                scope=sid,
-                links=[
-                    _session_link(sid, "Open session"),
-                    {"label": "Subagents view", "href": "#/subagents"},
-                    _doc_link("Anthropic: manage costs",
-                              "https://code.claude.com/docs/en/costs"),
-                ],
+            insts.append(_instance(
+                title=(f"Session {sid[:8]}… — {row['n_dispatch']} dispatch(es), "
+                       f"{int(row['total_ret']):,} tokens returned"),
+                key=key,
+                links=[_session_link(sid, "Open session"),
+                       {"label": "Subagents view", "href": "#/subagents"}],
             ))
-    return out
+    if not insts:
+        return []
+    return [_make_tip(
+        key=_key("subagent-sprawl", "overall"), category="subagent-sprawl", severity="info",
+        title="Subagent return bloat",
+        body=("Large subagent returns negate the point of delegation. Ask subagents for "
+              "narrower summaries, or split one big dispatch into a few focused ones."),
+        scope="overall", instances=insts,
+        links=[_doc_link("Anthropic: manage costs", "https://code.claude.com/docs/en/costs")],
+    )]
 
 
 def all_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
