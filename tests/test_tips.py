@@ -147,6 +147,8 @@ class RightSizeTests(unittest.TestCase):
         self.assertEqual(rs[0]["severity"], "cost")
         self.assertIsNotNone(rs[0]["estimated_savings_usd"])
         self.assertGreater(rs[0]["estimated_savings_usd"], 0)
+        # 10 turns x (1M in, 200 out): Opus 5/25 vs Sonnet 2/10 from pricing.json tier_fallback
+        self.assertAlmostEqual(rs[0]["estimated_savings_usd"], 30.03, places=2)
 
 
 class OutlierTests(unittest.TestCase):

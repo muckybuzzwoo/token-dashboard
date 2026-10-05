@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from .db import connect, cross_workspace_leaks
+from .pricing import load_pricing
+
+_PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
 
 
 def _iso_days_ago(today_iso: str, n: int) -> str:
@@ -225,8 +228,9 @@ def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         row = c.execute(sql, (since,)).fetchone()
     if not row or (row["n"] or 0) < 10:
         return []
-    api_opus   = ((row["in_tok"] or 0) * 15 + (row["out_tok"] or 0) * 75) / 1_000_000
-    api_sonnet = ((row["in_tok"] or 0) *  3 + (row["out_tok"] or 0) * 15) / 1_000_000
+    rates = load_pricing(_PRICING_JSON)["tier_fallback"]
+    api_opus   = ((row["in_tok"] or 0) * rates["opus"]["input"]   + (row["out_tok"] or 0) * rates["opus"]["output"])   / 1_000_000
+    api_sonnet = ((row["in_tok"] or 0) * rates["sonnet"]["input"] + (row["out_tok"] or 0) * rates["sonnet"]["output"]) / 1_000_000
     savings = api_opus - api_sonnet
     if savings < 1.0:
         return []

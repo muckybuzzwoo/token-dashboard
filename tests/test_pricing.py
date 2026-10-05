@@ -29,13 +29,38 @@ class CostTests(unittest.TestCase):
 
     def test_known_sonnet_5_input_cost(self):
         c = cost_for("claude-sonnet-5", self._u(input_tokens=1_000_000), self.p)
-        self.assertAlmostEqual(c["usd"], 3.00, places=4)
+        self.assertAlmostEqual(c["usd"], 2.00, places=4)
         self.assertFalse(c["estimated"])
 
     def test_known_sonnet_5_output_cost(self):
         c = cost_for("claude-sonnet-5", self._u(output_tokens=1_000_000), self.p)
-        self.assertAlmostEqual(c["usd"], 15.00, places=4)
+        self.assertAlmostEqual(c["usd"], 10.00, places=4)
         self.assertFalse(c["estimated"])
+
+    def test_known_sonnet_5_5_cost(self):
+        c = cost_for("claude-sonnet-5-5", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 12.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_known_opus_5_5_cost(self):
+        c = cost_for("claude-opus-5-5", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 24.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_opus_5_5_cache_rates(self):
+        u = self._u(cache_read_tokens=1_000_000, cache_create_5m_tokens=1_000_000, cache_create_1h_tokens=1_000_000)
+        c = cost_for("claude-opus-5-5", u, self.p)
+        self.assertAlmostEqual(c["usd"], 0.20 + 5.00 + 8.00, places=4)
+
+    def test_known_opus_5_cost(self):
+        c = cost_for("claude-opus-5", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 30.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_fable_5_1_cache_read_is_cheaper_than_fable_5(self):
+        u = self._u(cache_read_tokens=1_000_000)
+        self.assertAlmostEqual(cost_for("claude-fable-5-1", u, self.p)["usd"], 0.25, places=4)
+        self.assertAlmostEqual(cost_for("claude-fable-5", u, self.p)["usd"], 1.00, places=4)
 
     def test_known_fable_input_cost(self):
         c = cost_for("claude-fable-5", self._u(input_tokens=1_000_000), self.p)
@@ -54,7 +79,12 @@ class CostTests(unittest.TestCase):
 
     def test_unknown_opus_falls_back(self):
         c = cost_for("claude-opus-9-9-experimental", self._u(input_tokens=1_000_000), self.p)
-        self.assertAlmostEqual(c["usd"], 15.00, places=4)
+        self.assertAlmostEqual(c["usd"], 5.00, places=4)
+        self.assertTrue(c["estimated"])
+
+    def test_unknown_sonnet_falls_back(self):
+        c = cost_for("claude-sonnet-9-9-experimental", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 2.00, places=4)
         self.assertTrue(c["estimated"])
 
     def test_unknown_unparseable_returns_none(self):

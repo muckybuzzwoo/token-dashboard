@@ -1,7 +1,7 @@
 import { api, fmt } from '/web/app.js';
 
 // Sonnet base input price — actual savings vary with cache hits
-const USD_PER_TOKEN = 3 / 1_000_000;
+const USD_PER_TOKEN = 2 / 1_000_000;
 
 function toUsd(tokens) {
   const n = (tokens ?? 0) * USD_PER_TOKEN;
@@ -76,7 +76,7 @@ export default async function (root) {
       <div class="card" style="display:flex;flex-direction:column;justify-content:center">
         <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Est. API Cost Saved</div>
         <div class="blur-sensitive" style="font-size:40px;font-weight:700;color:var(--good);font-family:var(--mono);line-height:1">${toUsd(s.total_saved)}</div>
-        <div class="muted blur-sensitive" style="font-size:11px;margin-top:6px">Sonnet · $3 / MTok input · base pricing</div>
+        <div class="muted blur-sensitive" style="font-size:11px;margin-top:6px">Sonnet · $2 / MTok input · base pricing</div>
         <div class="muted" style="font-size:11px">Actual savings higher with cache hits</div>
       </div>
       <div class="card">
