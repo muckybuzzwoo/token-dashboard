@@ -10,7 +10,7 @@ Each integration was reviewed for security concerns (OWASP-style checks for SQL 
 
 | PR | Title | Author | Highlights |
 |---|---|---|---|
-| [#9](https://github.com/nateherkai/token-dashboard/pull/9) | `chore(ci): run tests on push and PR` | sebastientang | GitHub Actions workflow that runs the test suite on Python 3.8 / 3.10 / 3.12. |
+| [#9](https://github.com/nateherkai/token-dashboard/pull/9) | `chore(ci): run tests on push and PR` | sebastientang | GitHub Actions workflow that runs the test suite on Python 3.10 / 3.12. Python 3.8 was dropped on 2026-11-23: it is end-of-life and GitHub's Ubuntu 26.04 runners no longer provide it, so the minimum supported version is now 3.10. |
 | [#2](https://github.com/nateherkai/token-dashboard/pull/2) | Scanner progress (FirstTimeScanner) | lucidqdreams | Live per-file progress on stderr during scans, throttled to ~5 updates/sec, tty-aware. |
 | [#10](https://github.com/nateherkai/token-dashboard/pull/10) | CSV and Markdown export for the Prompts route | sebastientang | "Copy MD" copies the current sort/filter to the clipboard. "Download CSV" produces a properly escaped CSV. |
 | [#15](https://github.com/nateherkai/token-dashboard/pull/15) | Pricing fix + team plan labels | hacker4ofakind | Corrects Opus 4.5 / 4.6 / 4.7 pricing to current Anthropic rates ($5 input / $25 output, with matching cache rates). Also adds `team` / `team-premium` plan labels for the Settings dropdown. **Before this fix the dashboard showed ~3× inflated Opus costs.** |

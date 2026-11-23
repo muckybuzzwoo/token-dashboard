@@ -20,7 +20,7 @@ A local dashboard that reads the JSONL transcripts Claude Code writes to `~/.cla
 
 ## Prerequisites
 
-- **Python 3.8 or newer** — already installed on macOS and most Linux. On Windows: `winget install Python.Python.3.12` or download from python.org.
+- **Python 3.10 or newer** — already installed on macOS and most Linux. On Windows: `winget install Python.Python.3.12` or download from python.org.
 - **Claude Code** — installed and with at least one session run. The dashboard reads those sessions. If you just installed Claude Code and haven't used it yet, run at least one prompt first.
 - **A web browser.** Any modern one.
 
