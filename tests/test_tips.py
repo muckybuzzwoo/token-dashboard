@@ -185,6 +185,14 @@ class RightSizeTests(unittest.TestCase):
         self.assertIn(f"~${sonnet:.2f}", tip["body"])
         self.assertAlmostEqual(tip["estimated_savings_usd"], round(opus - sonnet, 2), places=2)
 
+    def test_right_size_states_cache_assumption(self):
+        # Caches are model-scoped: a mid-session switch pays cache writes, not
+        # reads, so the Sonnet figure must say it assumes the same cache hits.
+        self._insert_short_turns("claude-opus-5-5", cache_read=1_000_000)
+        tip = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")[0]
+        self.assertIn("same cache hits", tip["body"])
+        self.assertIn("resets the prompt cache", tip["body"])
+
     def test_right_size_swaps_mixed_case_opus_model_to_sonnet(self):
         # The SQL LIKE filter is case-insensitive; the Opus->Sonnet swap must be too,
         # or a mixed-case id is priced as Opus on both sides and the saving is lost.
