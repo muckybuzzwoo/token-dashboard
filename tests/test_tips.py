@@ -179,6 +179,17 @@ class RightSizeTests(unittest.TestCase):
         self.assertIn(f"~${sonnet:.2f}", tip["body"])
         self.assertAlmostEqual(tip["estimated_savings_usd"], round(opus - sonnet, 2), places=2)
 
+    def test_right_size_swaps_mixed_case_opus_model_to_sonnet(self):
+        # The SQL LIKE filter is case-insensitive; the Opus->Sonnet swap must be too,
+        # or a mixed-case id is priced as Opus on both sides and the saving is lost.
+        self._insert_short_turns("Claude-Opus-5-5", cache_read=1_000_000)
+        pricing = load_pricing(PRICING_JSON)
+        usage = {"input_tokens": 10_000_000, "output_tokens": 2000, "cache_read_tokens": 10_000_000,
+                 "cache_create_5m_tokens": 0, "cache_create_1h_tokens": 0}
+        sonnet = cost_for("claude-sonnet-5-5", usage, pricing)["usd"]
+        tip = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")[0]
+        self.assertIn(f"~${sonnet:.2f}", tip["body"])
+
 
 class OutlierTests(unittest.TestCase):
     def setUp(self):

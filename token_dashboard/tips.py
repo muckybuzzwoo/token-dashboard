@@ -236,7 +236,8 @@ def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         usage = {k: r[k] or 0 for k in r.keys() if k.endswith("_tokens")}
         api_opus += cost_for(r["model"], usage, pricing)["usd"] or 0
         # Same-generation Sonnet when pricing.json lists it, else the sonnet tier fallback.
-        api_sonnet += cost_for(r["model"].replace("opus", "sonnet"), usage, pricing)["usd"] or 0
+        # Lower-case first: the LIKE filter above matches "Opus" too, pricing.json keys are lower-case.
+        api_sonnet += cost_for(r["model"].lower().replace("opus", "sonnet"), usage, pricing)["usd"] or 0
     savings = api_opus - api_sonnet
     if savings < 1.0:
         return []
