@@ -151,6 +151,13 @@ class RightSizeTests(unittest.TestCase):
         # 10 turns x (1M in, 200 out): Opus 5/25 vs Sonnet 2/10 from pricing.json tier_fallback
         self.assertAlmostEqual(rs[0]["estimated_savings_usd"], 30.03, places=2)
 
+    def test_default_today_does_not_use_deprecated_utcnow(self):
+        # datetime.utcnow() is deprecated since Python 3.12.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            right_size_tips(self.db)
+
     def _insert_short_turns(self, model, cache_read):
         with connect(self.db) as c:
             for i in range(10):

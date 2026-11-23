@@ -144,7 +144,7 @@ def _do_refresh(db_path: str, projects_dir: str, pricing: dict) -> None:
 def _warm_one(db_path: str, pricing: dict, days) -> None:
     try:
         since = (
-            (datetime.datetime.utcnow() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+            (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
             if days else None
         )
         key = _bundle_cache_key(since, None)
