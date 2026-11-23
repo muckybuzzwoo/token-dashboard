@@ -41,7 +41,7 @@ The command:
 2. Starts a local server at http://127.0.0.1:8080.
 3. Opens your default browser to that URL.
 
-Leave it running; it re-scans every 30 seconds and pushes updates live. Stop with `Ctrl+C`.
+Leave it running; it re-scans every 60 seconds and pushes updates live. Stop with `Ctrl+C`.
 
 ## Where the data comes from
 
@@ -93,7 +93,7 @@ Change the port: `PORT=9000 python3 cli.py dashboard`.
 
 The dashboard is a single page with a hash-router tab bar across the top; **Skills & Commands, Plugins, MCP and Hooks live under a "Register ▾" dropdown**, the rest are top-level tabs. Each tab is backed by its own JSON API under `/api/`:
 
-- **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
+- **Overview** — input/output/cache tokens for the selected range (1d / 2d / 3d / 7d / 30d / 90d / All, default 30d), sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
 - **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result. Has a "Copy MD" / "Download CSV" export for the current sort/filter.
 - **Sessions** — turn-by-turn view of any single session, with per-turn tokens and tool calls.
 - **Projects** — per-project comparison: tokens, session counts, and which files were touched most.
@@ -105,7 +105,7 @@ The dashboard is a single page with a hash-router tab bar across the top; **Skil
 - **Hooks / Commands / Agents** *(under Register)* — configured hooks from `settings.json` (with a broken-script check), your user commands from `~/.claude/commands/`, and commands/agents shipped by installed plugins.
 - **RTK** — optional [rtk](https://github.com/rtk-ai/rtk) savings view if the CLI is installed at `~/.local/bin/rtk`. Gracefully degrades on Windows or when RTK is absent (shows install instructions).
 - **Tips** — rule-based suggestions for reducing token usage. 19 detectors covering cache-hit rate, repeated file reads, repeated Bash commands, Opus turns that would fit on Sonnet, oversized tool results, subagent outliers, skill-listing budget pressure (scope-aware: reports effective per-session footprint and splits global vs project-scoped skills, named after the most-active recent project), oversized `CLAUDE.md`, cross-workspace leaks, dead skills (90d unused, excluding project-scoped skills in projects you haven't visited), subagent sprawl (sidechain dominates main thread), Bash bloat (commands without output limiters), context-window pressure, repeated identical Bash errors, heavy web-fetch sessions, Opus-only workspaces, MCP-server sprawl, stacked `CLAUDE.md` files, and overlong skill descriptions. Detectors that flag several items (e.g. repeated files, cross-workspace leaks, context-heavy sessions) group their instances into **one collapsible section** — the shared advice shown once, the concrete instances listed collapsed below with a per-instance dismiss. Each tip is dismissable for 14 days; drill-down links jump to the responsible session, project, or skill.
-- **Settings** — pick your plan (API / Pro / Max / Max-20x / Team). This does **not** change the dollar figures shown elsewhere — they're always the API pay-per-token value of your usage — it just shows your flat monthly fee next to them for comparison, so you can see whether your usage is worth more than you pay. Also lets you switch the `.claude` folder at runtime.
+- **Settings** — pick your plan (API / Pro / Max / Max-20x / Team / Team Premium). This does **not** change the dollar figures shown elsewhere — they're always the API pay-per-token value of your usage — it just shows your flat monthly fee next to them for comparison, so you can see whether your usage is worth more than you pay. Also lets you switch the `.claude` folder at runtime.
 
 Most data-heavy tabs carry a built-in, collapsible **explanation panel** (look for the "— click to expand" hint): the Overview's "What do these numbers mean?" glossary, plus column/chart guides on Prompts, Skills & Commands, Subagents and Workspaces. Each defines its metrics in plain English — what they measure, an example, and what you can read out of them — and is collapsed by default to keep the view uncluttered.
 
@@ -125,7 +125,7 @@ Claude Code writes each assistant response 2–3 times to disk while it streams 
 
 ## Privacy
 
-Nothing leaves your machine. No telemetry. No remote calls for your data. The browser fetches its JSON from `127.0.0.1`, and all JS/CSS/fonts are served from that same local server — ECharts is vendored into `web/`, and the UI falls back to system fonts rather than pulling from a font CDN. If you want to verify: `grep -r "https://" token_dashboard/ web/` — you'll find nothing.
+Nothing leaves your machine. No telemetry. No remote calls for your data. The browser fetches its JSON from `127.0.0.1`, and all JS/CSS/fonts are served from that same local server — ECharts is vendored into `web/`, and the UI falls back to system fonts rather than pulling from a font CDN. If you want to verify: `grep -rE "urlopen|urllib.request|http.client" token_dashboard/` finds nothing, so the Python side makes no outbound HTTP requests. The only `https://` strings in `token_dashboard/` and `web/` are clickable links (Anthropic docs and a Claude Code GitHub issue in the Tips, the RTK install page) and a license comment in the vendored ECharts. None of them is fetched.
 
 ## Tech stack
 
