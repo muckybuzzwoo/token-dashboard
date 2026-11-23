@@ -7,6 +7,8 @@ from typing import Optional, Union
 
 from .db import connect
 
+PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
+
 
 def load_pricing(path: Union[str, Path]) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -14,6 +16,8 @@ def load_pricing(path: Union[str, Path]) -> dict:
 
 def _tier_from_name(model: str) -> Optional[str]:
     m = (model or "").lower()
+    if "mythos" in m:  # Mythos = the Fable model for verified orgs, same pricing
+        return "fable"
     for tier in ("fable", "opus", "sonnet", "haiku"):
         if tier in m:
             return tier

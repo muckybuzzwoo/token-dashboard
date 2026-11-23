@@ -42,6 +42,43 @@ class CostTests(unittest.TestCase):
         self.assertAlmostEqual(c["usd"], 12.00, places=4)
         self.assertFalse(c["estimated"])
 
+    def test_sonnet_5_5_cache_read_is_0_05x_input(self):
+        c = cost_for("claude-sonnet-5-5", self._u(cache_read_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 0.10, places=4)
+
+    def test_known_fable_5_2_cost(self):
+        c = cost_for("claude-fable-5-2", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 48.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_fable_5_2_cache_rates(self):
+        u = self._u(cache_read_tokens=1_000_000, cache_create_5m_tokens=1_000_000, cache_create_1h_tokens=1_000_000)
+        c = cost_for("claude-fable-5-2", u, self.p)
+        self.assertAlmostEqual(c["usd"], 0.20 + 10.00 + 16.00, places=4)
+
+    def test_known_mythos_costs_match_fable_counterparts(self):
+        u = self._u(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+        for mythos, fable in (("claude-mythos-5-2", "claude-fable-5-2"),
+                              ("claude-mythos-5-1", "claude-fable-5-1"),
+                              ("claude-mythos-5", "claude-fable-5")):
+            c = cost_for(mythos, u, self.p)
+            self.assertAlmostEqual(c["usd"], cost_for(fable, u, self.p)["usd"], places=4, msg=mythos)
+            self.assertFalse(c["estimated"], msg=mythos)
+
+    def test_unknown_mythos_falls_back_to_fable_tier(self):
+        c = cost_for("claude-mythos-preview", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 10.00, places=4)
+        self.assertTrue(c["estimated"])
+
+    def test_known_haiku_5_5_cost_uses_up_to_100k_rates(self):
+        # Prompt-length tiering (>100K tokens per request) is not modelled; the
+        # <=100K rates apply. See docs/KNOWN_LIMITATIONS.md.
+        u = self._u(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000,
+                    cache_create_5m_tokens=1_000_000, cache_create_1h_tokens=1_000_000)
+        c = cost_for("claude-haiku-5-5", u, self.p)
+        self.assertAlmostEqual(c["usd"], 0.10 + 0.50 + 0.01 + 0.125 + 0.20, places=4)
+        self.assertFalse(c["estimated"])
+
     def test_known_opus_5_5_cost(self):
         c = cost_for("claude-opus-5-5", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
         self.assertAlmostEqual(c["usd"], 24.00, places=4)

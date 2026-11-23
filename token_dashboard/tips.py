@@ -18,14 +18,18 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from .db import connect, cross_workspace_leaks
-from .pricing import load_pricing
+from .pricing import PRICING_JSON, cost_for, load_pricing
 
-_PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
+
+def _utc_now_iso() -> str:
+    """Naive UTC ISO timestamp, same format datetime.utcnow().isoformat() gave
+    (utcnow is deprecated since Python 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 def _iso_days_ago(today_iso: str, n: int) -> str:
@@ -91,7 +95,7 @@ def _make_tip(*, key, category, severity, title, body, scope,
 
 
 def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     sql = """
       SELECT project_slug,
@@ -141,7 +145,7 @@ def cache_discipline_tips(db_path, today_iso: Optional[str] = None) -> List[dict
 
 
 def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     out = []
     with connect(db_path) as c:
@@ -213,24 +217,33 @@ def repeated_target_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
 
 
 def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     sql = """
-      SELECT COUNT(*) AS n,
-             SUM(input_tokens+cache_create_5m_tokens+cache_create_1h_tokens) AS in_tok,
-             SUM(output_tokens) AS out_tok
+      SELECT model, COUNT(*) AS n,
+             SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+             SUM(cache_read_tokens) AS cache_read_tokens,
+             SUM(cache_create_5m_tokens) AS cache_create_5m_tokens,
+             SUM(cache_create_1h_tokens) AS cache_create_1h_tokens
         FROM messages
        WHERE type='assistant' AND model LIKE '%opus%'
          AND output_tokens < 500 AND is_sidechain = 0
          AND timestamp >= ?
+       GROUP BY model
     """
     with connect(db_path) as c:
-        row = c.execute(sql, (since,)).fetchone()
-    if not row or (row["n"] or 0) < 10:
+        rows = c.execute(sql, (since,)).fetchall()
+    n = sum(r["n"] for r in rows)
+    if n < 10:
         return []
-    rates = load_pricing(_PRICING_JSON)["tier_fallback"]
-    api_opus   = ((row["in_tok"] or 0) * rates["opus"]["input"]   + (row["out_tok"] or 0) * rates["opus"]["output"])   / 1_000_000
-    api_sonnet = ((row["in_tok"] or 0) * rates["sonnet"]["input"] + (row["out_tok"] or 0) * rates["sonnet"]["output"]) / 1_000_000
+    pricing = load_pricing(PRICING_JSON)
+    api_opus = api_sonnet = 0.0
+    for r in rows:
+        usage = {k: r[k] or 0 for k in r.keys() if k.endswith("_tokens")}
+        api_opus += cost_for(r["model"], usage, pricing)["usd"] or 0
+        # Same-generation Sonnet when pricing.json lists it, else the sonnet tier fallback.
+        # Lower-case first: the LIKE filter above matches "Opus" too, pricing.json keys are lower-case.
+        api_sonnet += cost_for(r["model"].lower().replace("opus", "sonnet"), usage, pricing)["usd"] or 0
     savings = api_opus - api_sonnet
     if savings < 1.0:
         return []
@@ -239,9 +252,11 @@ def right_size_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
         return []
     return [_make_tip(
         key=key, category="right-size", severity="cost",
-        title=f"{row['n']} short Opus turns might fit on Sonnet",
+        title=f"{n} short Opus turns might fit on Sonnet",
         body=(f"Opus turns under 500 output tokens cost ~${api_opus:.2f} in the last 7 days. "
-              f"Sonnet would have cost ~${api_sonnet:.2f}."),
+              f"Sonnet would have cost ~${api_sonnet:.2f}. "
+              "This assumes the same cache hits on Sonnet: pick the model at session start, "
+              "because switching mid-session resets the prompt cache and the next turns pay cache writes."),
         scope="opus-short-turns-7d",
         links=[
             {"label": "Browse short prompts", "href": "#/prompts?sort=tokens"},
@@ -259,7 +274,7 @@ def outlier_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
     warning at that level (Anthropic MCP doc). Severity escalates to `warning`
     when the average size is above 50k.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     out = []
     with connect(db_path) as c:
@@ -466,7 +481,7 @@ def skill_listing_budget_tips(db_path, today_iso: Optional[str] = None,
     invocation counts from `tool_calls` so the worst offenders (unused or
     rarely used) can be pointed at directly.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 30)
 
     from .skills import cached_catalog, is_active_in_cwd
@@ -609,7 +624,7 @@ def _distinct_active_cwds(db_path, since_iso: str) -> list[str]:
 def claude_md_size_tips(db_path, today_iso: Optional[str] = None,
                          max_lines: int = _CLAUDE_MD_MAX_LINES) -> List[dict]:
     """Flag project CLAUDE.md files that exceed Anthropic's recommended ~200 lines."""
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 30)
 
     insts = []
@@ -668,7 +683,7 @@ def cross_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     Suggests moving the cross-referenced info into the source workspace's
     CLAUDE.md or memory so agents don't keep crossing.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     leaks = cross_workspace_leaks(db_path, limit=10, since=since)
     insts = []
@@ -723,7 +738,7 @@ def context_pressure_tips(db_path, today_iso: Optional[str] = None) -> List[dict
     Net-new per turn is conservative but trustworthy: at >100k tokens of new
     content in a single turn, the prompt is heavy in absolute terms.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     sql = """
       SELECT session_id,
@@ -773,7 +788,7 @@ def repeated_bash_errors_tips(db_path, today_iso: Optional[str] = None) -> List[
     from the system prompt. Uses the tool_use_id join introduced for the
     bash-bloat tip.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 3)  # short window: this is an active-debug signal
     sql = """
       SELECT bash.target          AS cmd,
@@ -847,7 +862,7 @@ def web_fetch_volume_tips(db_path, today_iso: Optional[str] = None) -> List[dict
     cacheable references that could go into CLAUDE.md or a memory entry, OR
     a tool with no result-trimming.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     with connect(db_path) as c:
         # Pull all per-session tool_name counts, then filter in Python so the
@@ -901,7 +916,7 @@ def opus_only_workspace_tips(db_path, today_iso: Optional[str] = None) -> List[d
     need top-of-line reasoning (file reads, refactors, scaffolding) is
     cheaper on Sonnet or Haiku.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 14)
     sql = """
       SELECT project_slug,
@@ -953,7 +968,7 @@ def mcp_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
     are listed for Claude). Anthropic recommends disabling MCPs you don't
     actively use.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     out = []
     servers: set[str] = set()
@@ -1009,7 +1024,7 @@ def claude_md_stack_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     too big; this one flags the *stack* (global + project + nested). Each
     layer adds context to every turn even when individually within limits.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 30)
 
     insts = []
@@ -1078,7 +1093,7 @@ def long_skill_descriptions_tips(db_path, today_iso: Optional[str] = None) -> Li
     this one names the biggest individual offenders, useful when the user owns
     the skill and can shorten it.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     from .skills import cached_catalog
     catalog = cached_catalog(db_path)
     if not catalog:
@@ -1168,7 +1183,7 @@ def bash_bloat_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
     command string, and emits the top offenders that have no `head`,
     `Select-Object -First`, etc. in the command text.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     sql = """
       SELECT bash.target            AS cmd,
@@ -1251,7 +1266,7 @@ def dead_skills_tips(db_path, today_iso: Optional[str] = None) -> List[dict]:
     user simply hasn't touched lately, and uninstalling it would break that
     project the moment it's reopened.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, _DEAD_SKILLS_WINDOW_DAYS)
     now = time.time()
     min_age = _DEAD_SKILLS_MIN_AGE_DAYS * 86400
@@ -1357,7 +1372,7 @@ def subagent_sprawl_tips(db_path, today_iso: Optional[str] = None) -> List[dict]
     that average ≥5k tokens per return and ≥20k total across all dispatches in
     7 days are dispatching subagents that are doing too much per call.
     """
-    today_iso = today_iso or datetime.utcnow().isoformat()
+    today_iso = today_iso or _utc_now_iso()
     since = _iso_days_ago(today_iso, 7)
     # Join each Agent/Task call to its tool_result via tool_use_id.
     sql = """

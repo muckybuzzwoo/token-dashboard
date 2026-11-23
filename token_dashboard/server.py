@@ -24,7 +24,7 @@ from .db import (
     subagent_breakdown, top_subagent_sessions,
     orchestration_breakdown, dispatch_tree,
 )
-from .pricing import load_pricing, cost_for, get_plan, set_plan
+from .pricing import PRICING_JSON, load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
 from .scanner import scan_dir
 from .skills import cached_catalog
@@ -34,7 +34,6 @@ from .hooks_catalog import scan_hooks, scan_commands, scan_agents
 
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
-PRICING_JSON = Path(__file__).resolve().parent.parent / "pricing.json"
 
 # Server-sent events fan out to every open /api/stream connection. A single
 # shared queue.Queue would hand each event to just one connection (whichever
@@ -145,7 +144,7 @@ def _do_refresh(db_path: str, projects_dir: str, pricing: dict) -> None:
 def _warm_one(db_path: str, pricing: dict, days) -> None:
     try:
         since = (
-            (datetime.datetime.utcnow() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+            (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
             if days else None
         )
         key = _bundle_cache_key(since, None)

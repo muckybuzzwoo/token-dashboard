@@ -33,7 +33,11 @@ If you use Claude's Cowork mode (server-side sessions, not local `claude` CLI), 
 
 ## Non-standard model names get tier-fallback pricing
 
-If a transcript references a model ID not in `pricing.json` (e.g. a future snapshot that isn't in our table yet), cost is estimated from the tier substring (`fable` / `opus` / `sonnet` / `haiku`) in the name. The UI marks these as `estimated: true`. If the model name contains none of those substrings, cost is reported as null.
+If a transcript references a model ID not in `pricing.json` (e.g. a future snapshot that isn't in our table yet), cost is estimated from the tier substring (`fable` / `opus` / `sonnet` / `haiku`) in the name; `mythos` ids count as `fable` (same pricing). The UI marks these as `estimated: true`. If the model name contains none of those substrings, cost is reported as null.
+
+## Claude Haiku 5.5 long prompts are under-priced
+
+Claude Haiku 5.5 costs 5× more for a request whose prompt is over 100,000 tokens (cache reads and writes included). `pricing.json` holds one rate per model and the cost queries work on summed token counts, not per request, so every Haiku 5.5 request is priced at the up-to-100K rates ($0.10 / $0.50). Long-prompt Haiku 5.5 requests are therefore under-estimated.
 
 ## First scan can be slow
 
