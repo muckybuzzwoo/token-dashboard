@@ -136,11 +136,22 @@ class RightSizeTests(unittest.TestCase):
         self.db = os.path.join(self.tmp, "t.db")
         init_db(self.db)
 
-    def test_short_opus_turns_flagged_with_cost_severity(self):
+    # Usage of the 10 rows _insert_short_turns(..., cache_read=1_000_000) writes.
+    USAGE_10_TURNS = {"input_tokens": 10_000_000, "output_tokens": 2000, "cache_read_tokens": 10_000_000,
+                      "cache_create_5m_tokens": 0, "cache_create_1h_tokens": 0}
+
+    def _insert_short_turns(self, model, cache_read):
+        """10 short (200 output tokens) main-thread turns, 1M input each."""
         with connect(self.db) as c:
             for i in range(10):
-                c.execute("INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens, is_sidechain) VALUES (?, 's','p','assistant','2026-04-18T00:00:00Z','claude-opus-4-7', 1000000, 200, 0, 0, 0, 0)", (f"a{i}",))
+                c.execute("INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens, is_sidechain) VALUES (?, 's','p','assistant','2026-04-18T00:00:00Z', ?, 1000000, 200, ?, 0, 0, 0)", (f"{model}-{i}", model, cache_read))
             c.commit()
+
+    def _cost(self, model):
+        return cost_for(model, self.USAGE_10_TURNS, load_pricing(PRICING_JSON))["usd"]
+
+    def test_short_opus_turns_flagged_with_cost_severity(self):
+        self._insert_short_turns("claude-opus-4-7", cache_read=0)
         tips = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")
         rs = [t for t in tips if t["category"] == "right-size"]
         self.assertTrue(rs)
@@ -158,30 +169,18 @@ class RightSizeTests(unittest.TestCase):
             warnings.simplefilter("error", DeprecationWarning)
             right_size_tips(self.db)
 
-    def _insert_short_turns(self, model, cache_read):
-        with connect(self.db) as c:
-            for i in range(10):
-                c.execute("INSERT INTO messages (uuid, session_id, project_slug, type, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens, is_sidechain) VALUES (?, 's','p','assistant','2026-04-18T00:00:00Z', ?, 1000000, 200, ?, 0, 0, 0)", (f"{model}-{i}", model, cache_read))
-            c.commit()
-
     def test_right_size_costs_come_from_pricing_json(self):
         # Cache reads are most of the input on Claude Code turns; the Opus
         # figure must match cost_for on the same usage, cache reads included.
         self._insert_short_turns("claude-opus-4-7", cache_read=1_000_000)
-        pricing = load_pricing(PRICING_JSON)
-        usage = {"input_tokens": 10_000_000, "output_tokens": 2000, "cache_read_tokens": 10_000_000,
-                 "cache_create_5m_tokens": 0, "cache_create_1h_tokens": 0}
-        opus = cost_for("claude-opus-4-7", usage, pricing)["usd"]
+        opus = self._cost("claude-opus-4-7")
         tip = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")[0]
         self.assertIn(f"~${opus:.2f}", tip["body"])
 
     def test_right_size_uses_same_generation_sonnet_rates(self):
         self._insert_short_turns("claude-opus-5-5", cache_read=1_000_000)
-        pricing = load_pricing(PRICING_JSON)
-        usage = {"input_tokens": 10_000_000, "output_tokens": 2000, "cache_read_tokens": 10_000_000,
-                 "cache_create_5m_tokens": 0, "cache_create_1h_tokens": 0}
-        opus = cost_for("claude-opus-5-5", usage, pricing)["usd"]
-        sonnet = cost_for("claude-sonnet-5-5", usage, pricing)["usd"]
+        opus = self._cost("claude-opus-5-5")
+        sonnet = self._cost("claude-sonnet-5-5")
         tip = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")[0]
         self.assertIn(f"~${sonnet:.2f}", tip["body"])
         self.assertAlmostEqual(tip["estimated_savings_usd"], round(opus - sonnet, 2), places=2)
@@ -190,10 +189,7 @@ class RightSizeTests(unittest.TestCase):
         # The SQL LIKE filter is case-insensitive; the Opus->Sonnet swap must be too,
         # or a mixed-case id is priced as Opus on both sides and the saving is lost.
         self._insert_short_turns("Claude-Opus-5-5", cache_read=1_000_000)
-        pricing = load_pricing(PRICING_JSON)
-        usage = {"input_tokens": 10_000_000, "output_tokens": 2000, "cache_read_tokens": 10_000_000,
-                 "cache_create_5m_tokens": 0, "cache_create_1h_tokens": 0}
-        sonnet = cost_for("claude-sonnet-5-5", usage, pricing)["usd"]
+        sonnet = self._cost("claude-sonnet-5-5")
         tip = right_size_tips(self.db, today_iso="2026-04-19T00:00:00")[0]
         self.assertIn(f"~${sonnet:.2f}", tip["body"])
 
