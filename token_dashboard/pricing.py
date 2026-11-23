@@ -16,6 +16,8 @@ def load_pricing(path: Union[str, Path]) -> dict:
 
 def _tier_from_name(model: str) -> Optional[str]:
     m = (model or "").lower()
+    if "mythos" in m:  # Mythos = the Fable model for verified orgs, same pricing
+        return "fable"
     for tier in ("fable", "opus", "sonnet", "haiku"):
         if tier in m:
             return tier

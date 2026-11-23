@@ -56,6 +56,20 @@ class CostTests(unittest.TestCase):
         c = cost_for("claude-fable-5-2", u, self.p)
         self.assertAlmostEqual(c["usd"], 0.20 + 10.00 + 16.00, places=4)
 
+    def test_known_mythos_costs_match_fable_counterparts(self):
+        u = self._u(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+        for mythos, fable in (("claude-mythos-5-2", "claude-fable-5-2"),
+                              ("claude-mythos-5-1", "claude-fable-5-1"),
+                              ("claude-mythos-5", "claude-fable-5")):
+            c = cost_for(mythos, u, self.p)
+            self.assertAlmostEqual(c["usd"], cost_for(fable, u, self.p)["usd"], places=4, msg=mythos)
+            self.assertFalse(c["estimated"], msg=mythos)
+
+    def test_unknown_mythos_falls_back_to_fable_tier(self):
+        c = cost_for("claude-mythos-preview", self._u(input_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 10.00, places=4)
+        self.assertTrue(c["estimated"])
+
     def test_known_haiku_5_5_cost_uses_up_to_100k_rates(self):
         # Prompt-length tiering (>100K tokens per request) is not modelled; the
         # <=100K rates apply. See docs/KNOWN_LIMITATIONS.md.
