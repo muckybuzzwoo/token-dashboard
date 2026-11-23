@@ -19,7 +19,7 @@ The test command runs the full offline suite. `scan` refreshes the local SQLite 
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.8+ and the standard library only. Keep files small and single-purpose; split modules that grow beyond roughly 400 lines or mix unrelated concerns. Use four-space indentation, `snake_case` for Python names, and clear route-oriented names for frontend modules such as `overview.js` or `sessions.js`. SQL must use parameter binding for user-reachable values; f-strings in SQL are acceptable only for internal column names or placeholder lists. Add type hints and docstrings when they clarify intent.
+Use Python 3.10+ and the standard library only. Keep files small and single-purpose; split modules that grow beyond roughly 500 lines or mix unrelated concerns. Use four-space indentation, `snake_case` for Python names, and clear route-oriented names for frontend modules such as `overview.js` or `sessions.js`. SQL must use parameter binding for user-reachable values; f-strings in SQL are acceptable only for internal column names or placeholder lists. Add type hints and docstrings when they clarify intent.
 
 ## Testing Guidelines
 
