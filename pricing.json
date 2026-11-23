@@ -96,6 +96,14 @@
       "cache_create_5m": 3.75,
       "cache_create_1h": 6.00
     },
+    "claude-haiku-5-5": {
+      "tier": "haiku",
+      "input": 0.10,
+      "output": 0.50,
+      "cache_read": 0.01,
+      "cache_create_5m": 0.125,
+      "cache_create_1h": 0.20
+    },
     "claude-haiku-4-5": {
       "tier": "haiku",
       "input": 1.00,
