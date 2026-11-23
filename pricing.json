@@ -1,5 +1,13 @@
 {
   "models": {
+    "claude-fable-5-2": {
+      "tier": "fable",
+      "input": 8.00,
+      "output": 40.00,
+      "cache_read": 0.20,
+      "cache_create_5m": 10.00,
+      "cache_create_1h": 16.00
+    },
     "claude-fable-5-1": {
       "tier": "fable",
       "input": 10.00,
@@ -68,7 +76,7 @@
       "tier": "sonnet",
       "input": 2.00,
       "output": 10.00,
-      "cache_read": 0.20,
+      "cache_read": 0.10,
       "cache_create_5m": 2.50,
       "cache_create_1h": 4.00
     },

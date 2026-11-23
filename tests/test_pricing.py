@@ -42,6 +42,20 @@ class CostTests(unittest.TestCase):
         self.assertAlmostEqual(c["usd"], 12.00, places=4)
         self.assertFalse(c["estimated"])
 
+    def test_sonnet_5_5_cache_read_is_0_05x_input(self):
+        c = cost_for("claude-sonnet-5-5", self._u(cache_read_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 0.10, places=4)
+
+    def test_known_fable_5_2_cost(self):
+        c = cost_for("claude-fable-5-2", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
+        self.assertAlmostEqual(c["usd"], 48.00, places=4)
+        self.assertFalse(c["estimated"])
+
+    def test_fable_5_2_cache_rates(self):
+        u = self._u(cache_read_tokens=1_000_000, cache_create_5m_tokens=1_000_000, cache_create_1h_tokens=1_000_000)
+        c = cost_for("claude-fable-5-2", u, self.p)
+        self.assertAlmostEqual(c["usd"], 0.20 + 10.00 + 16.00, places=4)
+
     def test_known_opus_5_5_cost(self):
         c = cost_for("claude-opus-5-5", self._u(input_tokens=1_000_000, output_tokens=1_000_000), self.p)
         self.assertAlmostEqual(c["usd"], 24.00, places=4)
